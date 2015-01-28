@@ -145,7 +145,7 @@ One Touch Prepare of Specific Backup
 
 For example, I have these 2 backup sets with 2 incrementals each: ::
 
-    [revin@forge !]$ pyxbackup list
+    [revin@forge ~]$ pyxbackup list
     # Full backup: 2014_10_15-11_32_32, incrementals: ['2014_10_15-11_34_17', '2014_10_15-11_32_41']
     # Full backup: 2014_10_15-11_32_04, incrementals: ['2014_10_15-11_32_23', '2014_10_15-11_32_14']
 
