@@ -29,7 +29,7 @@ A file called ``pyxbackup.cnf`` can store configuration values. By default, the 
 
 Below are some valid options recognized from the configuration file: ::
 
-    [xbackup]
+    [pyxbackup]
     # MySQL credentials that can be used to the instance
     # being backed up, only user and pass are used at the 
     # time of this writing
@@ -52,7 +52,7 @@ Below are some valid options recognized from the configuration file: ::
     # Whether to specify --galera-info to innobackupex, unused
     galera_info = 0
     # Send abckup failure notifications to
-    notify_by_email = jervin.real@percona.com
+    notify_by_email = myemail@example.com
     # Where to stor raw (compressed) backups on the local directory
     # If --remote-push-only is specified, this is still needed but
     # they will not contain the actual backups, only meta information
