@@ -1974,23 +1974,28 @@ def list_backups():
             else:
                 i.sort()
                 i.reverse()
-                xb_incr_list[d] = i
 
             if d not in xb_full_list:
                 _debug("A group of incremental backup from the folder ",
                     os.path.join(xb_stor_incr, d), " has no parent backup from ",
                     xb_stor_full)
 
-            for r in i:
+            # We iterate over a copy of the list, otherwise we lose reference
+            # to the list in case the first condition is hit i.e. invalid backup
+            for r in i[:]:
                 if not os.path.isfile(os.path.join(xb_stor_incr, d, r, XB_TAG_FILE)):
                     _debug("Incremental backup ", os.path.join(xb_stor_incr, d, r),
                         " is not recognized as incremental")
                     unrecognized_backups = True
                     i.remove(r)
                 elif d == xb_last_full and xb_last_incr is None:
+                    _debug('I never hit this one!')
                     xb_last_incr = r
                     xb_last_backup = xb_last_incr
                     xb_last_backup_is = XB_CMD_INCR
+
+            xb_incr_list[d] = i
+
 
     if xb_last_backup is None:
         xb_last_backup = xb_last_full
