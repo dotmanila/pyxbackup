@@ -110,7 +110,7 @@ Running a Full Backup
 
 ::
 
-    pyxbackup incr
+    pyxbackup full
 
 Running an Incremental Backup
 -----------------------------
@@ -124,7 +124,7 @@ Listing Existing Backups
 
 ::
 
-    xbackup list
+    pyxbackup list
 
 Checking Status of Last Backup
 ------------------------------
