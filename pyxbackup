@@ -40,7 +40,7 @@ xb_opt_restore_dir = None
 xb_opt_remote_stor_dir = None
 xb_opt_remote_host = None
 xb_opt_remote_push_only = None
-xb_opt_remote_script = 'xbackup.py'
+xb_opt_remote_script = 'pyxbackup'
 xb_opt_ssh_opts = ''
 xb_opt_ssh_user = None
 xb_opt_notify_by_email = None
@@ -110,8 +110,8 @@ XB_LCK_FILE = ''
 XB_META_FILE = 'xbackup.meta'
 XB_BKP_LOG = 'innobackupex-backup.log'
 XB_APPLY_LOG = 'innobackupex-prepare.log'
-XB_LOG_NAME = 'xbackup.log'
-XB_SSH_TMPFILE = '/tmp/xbackup.py-ssh-result'
+XB_LOG_NAME = 'pyxbackup.log'
+XB_SSH_TMPFILE = '/tmp/pyxbackup.py-ssh-result'
 XB_SIGTERM_CAUGHT = False
 
 # What commands does not need a log or lock file
@@ -380,6 +380,23 @@ def _compress(bkp, tgz):
         _warn("Directory not found, ", bkp, " cannot compress")
         return False
 
+    if xb_opt_compress_with == 'gzip':
+        return _compress_tgz(bkp, tgz)
+    elif xb_opt_compress_with == 'qpress':
+        return _compress_qp(bkp)
+
+def _compress_qp(bkp):
+    global xb_exit_code
+
+    cwd = os.getcwd()
+    os.chdir(bkp)
+
+    # @todo add backups compression with qpress compatible to
+    # innobackupex --compress results
+
+def _compress_tgz(bkp, tgz):
+    global xb_exit_code
+
     if os.path.isfile(tgz):
         _warn("Destination archive already exists, ", tgz, " aborting compression")
         return False
@@ -388,8 +405,7 @@ def _compress(bkp, tgz):
     os.chdir(bkp)
 
     run_cmd = "tar c"
-    if xb_opt_compress_with == 'gzip':
-        run_cmd += 'z'
+    run_cmd += 'z'
     if xb_opt_debug:
         run_cmd += 'v'
 
@@ -765,7 +781,7 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
-    xb_ibx_opts = ' --no-timestamp ' + xb_ibx_opts
+    xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
     if xb_opt_mysql_user:
         xb_ibx_opts = (' --user=%s ' % xb_opt_mysql_user) + xb_ibx_opts
 
@@ -778,6 +794,16 @@ def run_xb():
     if xb_opt_remote_push_only \
             and not _ssh_execute("mkdir -p %s" % xb_this_backup_remote):
         _die("Could not create remote directory to push backup to!")
+
+    if xb_opt_compress:
+        if xb_opt_compress_with == 'qpress':
+            xb_ibx_opts += ' --compress --compress-threads=4'
+
+        xb_ibx_opts += ' --stream=xbstream --parallel=4'
+        xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
+        os.mkdir(xb_this_backup)
+
+    xb_ibx_opts += ' ' + xb_this_backup
 
     try:
         run_cmd = xb_ibx_bin + xb_ibx_opts
@@ -792,7 +818,7 @@ def run_xb():
         ibx_log = "%s/%s-innobackupex-backup.log" % (xb_opt_work_dir, xb_curdate)
         tee_cmd = "tee %s" % ibx_log
 
-        if xb_opt_compress and xb_opt_compress_with == 'gzip' and not xb_opt_apply_log:
+        if xb_opt_compress and not xb_opt_apply_log:
             if not xb_opt_debug:
                 log_fd = os.open(ibx_log, os.O_WRONLY|os.O_CREAT)
                 p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=log_fd)
@@ -801,7 +827,11 @@ def run_xb():
                 p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
 
             if xb_opt_remote_push_only:
-                pipe_cmd = "gzip - > %s/backup.xgz" % xb_this_backup_remote
+                if xb_opt_compress_with == 'qpress':
+                    pipe_cmd = "xbstream -x -C %s" % xb_this_backup_remote
+                else:
+                    pipe_cmd = "gzip - > %s/backup.xgz" % xb_this_backup_remote
+                
                 pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
                     xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
                 _debug('Piping backup to remote with "%s"' % pipe_cmd)
@@ -953,7 +983,6 @@ def run_xb():
 def run_xb_full():
     """Execute a full backup"""
 
-    global xb_ibx_opts
     global xb_this_backup
     global xb_this_backup_remote
 
@@ -973,17 +1002,6 @@ def run_xb_full():
 
     if xb_opt_remote_host:
         xb_this_backup_remote = os.path.join(xb_opt_remote_stor_dir, 'full', xb_curdate)
-
-    if xb_opt_compress:
-        if xb_opt_compress_with == 'gzip':
-            xb_ibx_opts += ' --stream=xbstream'
-            xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
-
-            os.mkdir(xb_this_backup)
-        else:
-            _die('Not supported compression yet, please use default gzip')
-
-    xb_ibx_opts += ' ' + xb_this_backup
 
     run_xb()
 
@@ -1040,17 +1058,6 @@ def run_xb_incr():
             xb_opt_remote_stor_dir, 'incr', xb_last_full, xb_curdate)
 
     xb_ibx_opts += ib
-
-    if xb_opt_compress:
-        if xb_opt_compress_with == 'gzip':
-            xb_ibx_opts += ' --stream=xbstream'
-            xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
-
-            os.mkdir(xb_this_backup)
-        else:
-            _die('Not supported compression yet, please use default gzip')
-
-    xb_ibx_opts += ' ' + xb_this_backup
 
     run_xb()
 
@@ -1634,7 +1641,7 @@ def init():
         "restore-set: Restore to a specific backup set \n"
         "last-lsn: Print out to_lsn value of last backup for incremental use")
     p_epilog = ("Options here can also be specified on a filed called "
-        "xbackup.cnf on the same directory of the script or on a file "
+        "pyxbackup.cnf on the same directory of the script or on a file "
         "specified via the --config option")
     parser = OptionParser(p_usage, version="%prog " + str(xb_version),
         description=p_desc, epilog=p_epilog)
@@ -1642,7 +1649,7 @@ def init():
         help='Path to config file to use, useful for multiple back locations')
     parser.add_option('-u', '--mysql-user', dest='mysql_user', type='string',
         help='MySQL server username')
-    parser.add_option('-p', '--mysql-password', dest='mysql_pass', type='string',
+    parser.add_option('-p', '--mysql-pass', dest='mysql_pass', type='string',
         help='MySQL server password')
     parser.add_option('-H', '--mysql-host', dest='mysql_host', type='string',
         help='MySQL server hostname/IP address')
@@ -1822,8 +1829,8 @@ def init():
                 xb_opt_retention_months = int(xb_cfg.get('pyxbackup', 'retention_months'))
 
         if xb_cfg.has_option('pyxbackup', 'retention_weeks'):
-            if int(xb_cfg.get('pyxbackup', 'retention_months')) > 0:
-                xb_opt_retention_weeks = int(xb_cfg.get('pyxbackup', 'retention_months'))
+            if int(xb_cfg.get('pyxbackup', 'retention_weeks')) > 0:
+                xb_opt_retention_weeks = int(xb_cfg.get('pyxbackup', 'retention_weeks'))
 
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
