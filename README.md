@@ -35,7 +35,7 @@ Below are some valid options recognized from the configuration file: ::
     # time of this writing
     mysql_host = 127.0.0.1
     mysql_user = msandbox
-    mysql_password = msandbox
+    mysql_pass = msandbox
     mysql_port = 56190
     mysql_socket = /tmp/mysql.sock
     # Instructs the script to run prepare on a copy of the backup
