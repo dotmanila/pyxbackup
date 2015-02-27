@@ -27,7 +27,7 @@ Configuration
 
 A file called ``pyxbackup.cnf`` can store configuration values. By default, the script looks for this file on the same directory where it is installed, it can also be specified from a manual location with the ``--config`` CLI option. Some configuration options are exclusive to the command line, they are marked with ``(cli)`` when executing ``pyxbackup.py --help``.
 
-Below are some valid options recognized from the configuration file: ::
+Below are some valid options recognized from the configuration file:
 
     [pyxbackup]
     # MySQL credentials that can be used to the instance
@@ -89,7 +89,14 @@ Below are some valid options recognized from the configuration file: ::
     # to support for encrypted backups at rest
     encrypt = AES256
     encrypt_key_file = /path/to/backups/key
-
+    # innobackupex has a lot of options not covered by this wrapper
+    # therefore to support additional options, you can pass additional
+    # parameters to innobackupex using this option. Enclose them in single or 
+    # double quotes and specify them as you would when running innobackupex
+    # manually. Take into account to not conflict with options like
+    # --compress, --encrypt*, --remote* as these are used in extended 
+    # fashion by pyxbackup. 
+    extra_ibx_options = '--slave-info --galera-info'
 
 
 Minimum Configuration
@@ -103,7 +110,7 @@ If you are streaming files to remote server, you should also have, aside from th
 Examples
 ========
 
-Assuming I have a very minimal ``pyxbackup.cnf`` below: ::
+Assuming I have a very minimal ``pyxbackup.cnf`` below:
 
     [pyxbackup]
     stor_dir = /sbx/msb/msb_5_6_190/bkp/stor
@@ -112,48 +119,48 @@ Assuming I have a very minimal ``pyxbackup.cnf`` below: ::
 Running a Full Backup
 ---------------------
 
-Taking a full backup: ::
+Taking a full backup:
 
     pyxbackup full
 
 Running an Incremental Backup
 -----------------------------
 
-Taking an incremental backup: ::
+Taking an incremental backup:
 
     pyxbackup incr
 
 Listing Existing Backups
 ------------------------
 
-Listing existing backups - also will help identify incomplete/failed backups that may be consuming disk space: ::
+Listing existing backups - also will help identify incomplete/failed backups that may be consuming disk space:
 
     pyxbackup list
 
 Checking Status of Last Backup
 ------------------------------
 
-Support for Zabbix/Nagios tests for monitoring: ::
+Support for Zabbix/Nagios tests for monitoring:
 
     pyxbackup --status-format=[nagios|zabbix] status
 
 Keeping a Running "prepared-full" Backup
 ----------------------------------------
 
-When enabled, a special folder inside the ``work_dir`` will be maintained. This is prefixed with **P_** and the timestamp will correspond to the last full backup that has been taken. When the full backup is taken, a ``--redo-only`` will be applied to it, any succeeding incrementals will be prepared to the same. When in need of a recent snapshot, this special folder can be a quick source. ::
+When enabled, a special folder inside the ``work_dir`` will be maintained. This is prefixed with **P_** and the timestamp will correspond to the last full backup that has been taken. When the full backup is taken, a ``--redo-only`` will be applied to it, any succeeding incrementals will be prepared to the same. When in need of a recent snapshot, this special folder can be a quick source.
 
     pyxbackup --apply-log full
 
 One Touch Prepare of Specific Backup
 ------------------------------------
 
-For example, I have these 2 backup sets with 2 incrementals each: ::
+For example, I have these 2 backup sets with 2 incrementals each:
 
     [revin@forge ~]$ pyxbackup list
     # Full backup: 2014_10_15-11_32_32, incrementals: ['2014_10_15-11_34_17', '2014_10_15-11_32_41']
     # Full backup: 2014_10_15-11_32_04, incrementals: ['2014_10_15-11_32_23', '2014_10_15-11_32_14']
 
-If I want to prepare the backup ``2014_10_15-11_32_41`` and make it ready for use, I will use the following command: ::
+If I want to prepare the backup ``2014_10_15-11_32_41`` and make it ready for use, I will use the following command:
 
     pyxbackup --restore-backup=2014_10_15-11_32_41 \
         --restore-dir=/sbx/msb/msb_5_6_190/bkp/tmp restore-set

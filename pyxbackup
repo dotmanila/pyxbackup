@@ -23,7 +23,6 @@ xb_opt_mysql_port = 3306
 xb_opt_mysql_sock = '/tmp/mysql.sock'
 xb_opt_mysql_cnf = None
 xb_opt_copy_binlogs = False
-xb_opt_galera_info = False
 xb_opt_compress = False
 xb_opt_compress_with = 'gzip'
 xb_opt_apply_log = False
@@ -50,6 +49,7 @@ xb_opt_first_binlog = False
 xb_opt_binlog_binary = None
 xb_opt_encrypt = False
 xb_opt_encrypt_key_file = None
+xb_opt_extra_ibx_options = None
 
 xb_hostname = None
 xb_user = None
@@ -1062,6 +1062,9 @@ def run_xb():
     if xb_rsync_bin is not None and not xb_opt_compress and not xb_opt_remote_push_only:
         xb_ibx_opts += ' --rsync'
 
+    if xb_opt_extra_ibx_options is not None:
+        xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
+
     xb_ibx_opts += ' ' + xb_this_backup
 
     try:
@@ -1870,7 +1873,6 @@ def init():
     global xb_opt_stor_dir
     global xb_opt_work_dir
     global xb_opt_copy_binlogs
-    global xb_opt_galera_info
     global xb_opt_compress
     global xb_opt_compress_with
     global xb_opt_apply_log
@@ -1897,6 +1899,7 @@ def init():
     global xb_opt_binlog_binary
     global xb_opt_encrypt
     global xb_opt_encrypt_key_file
+    global xb_opt_extra_ibx_options
 
     xb_opt_config = xb_cwd + '/pyxbackup.cnf'
     xb_cfg = None
@@ -1938,8 +1941,11 @@ def init():
         help='Path to temporary backup work directory')
     parser.add_option('-b', '--copy-binlogs', dest='copy_binlogs',  action="store_true",
         help='Include binary logs on backups?')
-    parser.add_option('-g', '--galera-info', dest='galera_info', action="store_true",
-        help='Include --galera-info to innobackupex command')
+    parser.add_option('', '--extra-ibx-options', dest='extra_ibx_options', type='string',
+        help=('Specify additional innobackupex options, make sure to '
+            'mind your quotes and avoid conflicts with --encrypt*, '
+            '--compress, --remote-host - will think of better way to '
+            'handle this in the future!'))
     parser.add_option('-z', '--compress', dest='compress',  action="store_true",
         help='Compress backups, by default with gzip, see -Z')
     parser.add_option('-Z', '--compress-with', dest='compress_with', default='gzip',
@@ -2078,9 +2084,6 @@ def init():
         if xb_cfg.has_option('pyxbackup', 'binlog_binary'):
             xb_opt_binlog_binary = xb_cfg.get('pyxbackup', 'binlog_binary')
 
-        if xb_cfg.has_option('pyxbackup', 'galera_info'):
-            xb_opt_galera_info = bool(int(xb_cfg.get('pyxbackup', 'galera_info')))
-
         if xb_cfg.has_option('pyxbackup', 'compress'):
             xb_opt_compress = bool(int(xb_cfg.get('pyxbackup', 'compress')))
 
@@ -2114,6 +2117,9 @@ def init():
         if xb_cfg.has_option('pyxbackup', 'encrypt'):
             xb_opt_encrypt = xb_cfg.get('pyxbackup', 'encrypt')
 
+        if xb_cfg.has_option('pyxbackup', 'extra_ibx_options'):
+            xb_opt_extra_ibx_options = xb_cfg.get('pyxbackup', 'extra_ibx_options')
+
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
     if options.mysql_host: xb_opt_mysql_host = options.mysql_host
@@ -2123,7 +2129,6 @@ def init():
     if options.stor_dir: xb_opt_stor_dir = options.stor_dir.rstrip('/')
     if options.work_dir: xb_opt_work_dir = options.work_dir.rstrip('/')
     if options.copy_binlogs: xb_opt_copy_binlogs = options.copy_binlogs
-    if options.galera_info: xb_opt_galera_info = options.galera_info
     if options.compress: xb_opt_compress = options.compress
     if options.compress_with: xb_opt_compress_with = options.compress_with
     if options.notify_by_email: xb_opt_notify_by_email = options.notify_by_email
@@ -2161,6 +2166,7 @@ def init():
 
     if options.encrypt: xb_opt_encrypt = options.encrypt
     if options.encrypt_key_file: xb_opt_encrypt_key_file = options.encrypt_key_file
+    if options.extra_ibx_options: xb_opt_extra_ibx_options = options.extra_ibx_options
 
     if xb_cfg: _debug('Found config file: ', xb_opt_config)
 
