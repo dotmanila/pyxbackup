@@ -45,7 +45,7 @@ Below are some valid options recognized from the configuration file: ::
     apply_log = 1
     # Whether to compress backups
     compress = 1
-    # What compression tool, only supports gzip for now
+    # What compression tool, supports gzip and qpress
     compress_with = gzip
     # Whether to copy binlogs, unused for now
     copy_binlogs = 0
@@ -82,9 +82,13 @@ Below are some valid options recognized from the configuration file: ::
     # How many sets of full + incrementals to keep in stor
     retention_sets = 2
     # How many archived weekly backups are kept, unused for now
-    retention_weekly = 0
+    retention_weeks = 0
     # How many archived monthly backups are kept, unused for now
-    retention_monthly = 0
+    retention_months = 0
+    # Same functions as innobackupex --encrypt --encrypt-key-file options
+    # to support for encrypted backups at rest
+    encrypt = AES256
+    encrypt_key_file = /path/to/backups/key
 
 
 
@@ -108,30 +112,30 @@ Assuming I have a very minimal ``pyxbackup.cnf`` below: ::
 Running a Full Backup
 ---------------------
 
-::
+Taking a full backup: ::
 
     pyxbackup full
 
 Running an Incremental Backup
 -----------------------------
 
-::
+Taking an incremental backup: ::
 
     pyxbackup incr
 
 Listing Existing Backups
 ------------------------
 
-::
+Listing existing backups - also will help identify incomplete/failed backups that may be consuming disk space: ::
 
     pyxbackup list
 
 Checking Status of Last Backup
 ------------------------------
 
-::
+Support for Zabbix/Nagios tests for monitoring: ::
 
-    pyxbackup status
+    pyxbackup --status-format=[nagios|zabbix] status
 
 Keeping a Running "prepared-full" Backup
 ----------------------------------------

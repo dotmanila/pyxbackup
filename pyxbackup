@@ -48,6 +48,8 @@ xb_opt_meta_item = None
 xb_opt_wipeout = False
 xb_opt_first_binlog = False
 xb_opt_binlog_binary = None
+xb_opt_encrypt = False
+xb_opt_encrypt_key_file = None
 
 xb_hostname = None
 xb_user = None
@@ -154,6 +156,13 @@ def _die(*msgs):
 
 def _debug(*msgs):
     if xb_opt_debug: _out("** DEBUG **", *msgs)
+
+def _which(file):
+    for path in os.environ["PATH"].split(os.pathsep):
+        if os.path.exists(path + os.path.sep + file):
+                return path + os.path.sep + file
+
+    return None
 
 def _exit_code(code):
     global xb_exit_code
@@ -346,13 +355,14 @@ def _prepare_backup(bkp, prep):
             if not os.path.isdir(prep_tmp): os.mkdir(prep_tmp, 0755)
             cmp_to = prep_tmp
 
-        tgz = "%s/backup.tgz" % bkp
-        if not os.path.isfile(tgz):
-            tgz = "%s/backup.xgz" % bkp
+        for fmt in ['xbs.gz', 'tar.gz', 'xbs.qp', 'xbs.qp.xbcrypt', 'qp', 'qp.xbcrypt']:
+            bkp_file = "%s/backup.%s" % (bkp, fmt)
+            if os.path.isfile(bkp_file):
+                break
 
-        _say("Decompressing %s" % tgz)
-        if not _decompress(tgz, cmp_to):
-            _die("An error occurred while extracting %s to %s" % (tgz, cmp_to))
+        _say("Decompressing %s" % bkp_file)
+        if not _decompress(bkp_file, cmp_to):
+            _die("An error occurred while extracting %s to %s" % (bkp_file, cmp_to))
 
         if is_of_type == XB_CMD_FULL:
             _say("Applying log on %s" % prep)
@@ -373,7 +383,7 @@ def _prepare_backup(bkp, prep):
 
     return prepare_success
 
-def _compress(bkp, tgz):
+def _compress(bkp, archive):
     global xb_exit_code
 
     if not os.path.isdir(bkp):
@@ -381,11 +391,11 @@ def _compress(bkp, tgz):
         return False
 
     if xb_opt_compress_with == 'gzip':
-        return _compress_tgz(bkp, tgz)
+        return _compress_tgz(bkp, archive)
     elif xb_opt_compress_with == 'qpress':
-        return _compress_qp(bkp)
+        return _compress_qp(bkp, archive)
 
-def _compress_qp(bkp):
+def _compress_qp(bkp, xbs):
     global xb_exit_code
 
     cwd = os.getcwd()
@@ -393,9 +403,79 @@ def _compress_qp(bkp):
 
     # @todo add backups compression with qpress compatible to
     # innobackupex --compress results
+    # @ todo _compress* commands are used when --apply-log is enabled
+    #   backups are streamed to local uncompressed/unencrypted then a copy
+    #   is compressed/encrypted. make sure these commands results in 
+    #   compatible format with streaming - our option is to simplify and add 
+    #   a different file format instead
+    # @todo add support for --rsync
+
+    # @todo here add support for encryption
+
+    # *.xbq for qpress
+    # *.xbc for qpress, encrypted
+
+    xbc_cmd = None
+    qp = None
+    xbc = None
+
+    if xb_opt_debug:
+        qp_cmd = 'qpress -rvT4'
+    else:
+        qp_cmd = 'qpress -rT4'
+
+    if xb_opt_encrypt:
+        qp_cmd += 'o .'
+        xbc_cmd = 'xbcrypt --encrypt-algo=%s --encrypt-key-file=%s --output=%s.qp.xbcrypt' % (
+            xb_opt_encrypt, xb_opt_encrypt_key_file, xbs)
+    else:
+        qp_cmd += ' . %s.qp' % xbs
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        if xb_opt_encrypt:
+            qp = Popen(qp_cmd, shell=True, stdout=PIPE, stderr=FNULL)
+            xbc = Popen(xbc_cmd, shell=True, stdin=qp.stdout, stdout=FNULL, stderr=FNULL)
+        else:
+            qp = Popen(qp_cmd, shell=True, stdout=FNULL, stderr=STDOUT)
+    else:
+        if xb_opt_encrypt:
+            qp = Popen(qp_cmd, shell=True, stdout=PIPE)
+            xbc = Popen(xbc_cmd, shell=True, stdin=qp.stdout)
+        else:    
+            qp = Popen(qp_cmd, shell=True)
+
+    r = qp.poll()
+    while r is None:
+        time.sleep(5)
+        r = qp.poll()
+
+    if xbc is not None:
+        x = xbc.poll()
+        if x is None: xbc.wait()
+        x = xbc.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Compressing ", bkp, " to ", xbs, " failed.")
+        _error("qpress command was: ", qp_cmd)
+        _error("qpress returned exit code was: ", str(r))
+
+        if xb_opt_encrypt:
+            _error("xbcrypt command was: ", xbc_cmd)
+            _error("xbcrypt returned exit code was: ", str(x))
+
+        _exit_code(4)
+        return False
+
+    return True
 
 def _compress_tgz(bkp, tgz):
     global xb_exit_code
+
+    tgz = "%s.tar.gz" % tgz
 
     if os.path.isfile(tgz):
         _warn("Destination archive already exists, ", tgz, " aborting compression")
@@ -516,6 +596,162 @@ def _extract_xgz(xgz, dest):
 
     return True
 
+def _extract_stream_qpress(xbs, dest):
+    xbc_cmd = None
+    is_encrypted = False
+
+    if xbs[-14:]  == 'xbs.qp.xbcrypt':
+        if not xb_opt_encrypt:
+            _die("Backup is %s is encrypted, no encryption options provided" % qp)
+        else:
+            xbc_cmd = 'xbcrypt --decrypt --encrypt-algo=%s ' % xb_opt_encrypt
+            xbc_cmd += '--encrypt-key-file=%s --input=%s' % (xb_opt_encrypt_key_file, xbs)
+
+        is_encrypted = True
+    else:
+        xbc_cmd = 'cat %s' % xbs
+
+    FNULL = None
+
+    xbs_cmd = "xbstream -x -C %s" % dest
+
+    _debug("Running xbcrypt command: %s" % xbc_cmd)
+    _debug("Running xbstream command: %s" % xbs_cmd)
+
+    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        xbc = Popen(xbc_cmd, shell=True, stdout=PIPE, stderr=FNULL)
+        xbs = Popen(xbs_cmd, shell=True, stderr=FNULL, stdin=xbc.stdout)
+    else:
+        xbc = Popen(xbc_cmd, shell=True, stdout=PIPE)
+        xbs = Popen(xbs_cmd, shell=True, stdin=xbc.stdout)
+
+    r = xbc.poll()
+    while r is None:
+        time.sleep(5)
+        r = xbc.poll()
+
+    x = xbs.poll()
+    if x is None: xbs.wait()
+    x = xbs.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Extracting ", xbs, " to ", dest, " failed.")
+        _error("Extract command was: %s | %s" % (xbc_cmd, xbs_cmd))
+        _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
+        _exit_code(4)
+        return False
+
+    # Now we compress *.qp files
+    ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        ibx = Popen(ibx_cmd, shell=True, stdout=FNULL, stderr=FNULL)
+    else:
+        ibx = Popen(ibx_cmd, shell=True)
+
+    r = ibx.poll()
+    while r is None:
+        time.sleep(5)
+        r = ibx.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Decompressing *.qp files failed.")
+        _error("Extract command was: %s" % ibx_cmd)
+        _error("Extract returned exit code was: %s" % str(r))
+        _exit_code(4)
+        return False
+
+
+    return True
+
+def _extract_nostream_qpress(qp, dest):
+    xbc_cmd = None
+    is_encrypted = False
+
+    if qp[-10:] == 'qp.xbcrypt':
+        if not xb_opt_encrypt:
+            _die("Backup is %s is encrypted, no encryption options provided" % qp)
+        else:
+            xbc_cmd = 'xbcrypt --decrypt --encrypt-algo=%s ' % xb_opt_encrypt
+            xbc_cmd += '--encrypt-key-file=%s --input=%s' % (xb_opt_encrypt_key_file, qp)
+
+        is_encrypted = True
+        qp_cmd = 'qpress -di %s' % dest
+    else:
+        qp_cmd = 'qpress -d %s %s' % (qp, dest)
+
+    FNULL = None
+
+    _debug("Running qpress command: %s" % qp_cmd)
+    if xbc_cmd is not None:
+        _debug("Running xbcrypt command: %s" % xbc_cmd)
+
+    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+
+    if is_encrypted:
+        if not xb_opt_debug:
+            FNULL = open(os.devnull, 'w')
+            xbc = Popen(xbc_cmd, shell=True, stdout=PIPE, stderr=FNULL)
+            qp = Popen(qp_cmd, shell=True, stderr=FNULL, stdin=xbc.stdout)
+        else:
+            xbc = Popen(xbc_cmd, shell=True, stdout=PIPE)
+            qp = Popen(qp_cmd, shell=True, stdin=xbc.stdout)
+    else:
+        if not xb_opt_debug:
+            FNULL = open(os.devnull, 'w')
+            qp = Popen(qp_cmd, shell=True, stderr=FNULL, stdout=FNULL)
+        else:
+            qp = Popen(qp_cmd, shell=True)
+
+
+    if is_encrypted:
+        r = xbc.poll()
+        while r is None:
+            time.sleep(5)
+            r = xbc.poll()
+
+        x = qp.poll()
+        if x is None: qp.wait()
+        x = qp.poll()
+
+        if FNULL is not None:
+            FNULL.close()
+
+        if r != 0:
+            _error("Extracting ", qp, " to ", dest, " failed.")
+            _error("Extract command was: %s | %s" % (xbc_cmd, qp_cmd))
+            _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
+            _exit_code(4)
+            return False
+    else:
+        r = qp.poll()
+        while r is None:
+            time.sleep(5)
+            r = qp.poll()
+
+        if FNULL is not None:
+            FNULL.close()
+
+        if r != 0:
+            _error("Extracting ", qp, " to ", dest, " failed.")
+            _error("Extract command was: %s" % qp_cmd, qp_cmd)
+            _error("Extract returned exit codes was: %s" % str(r))
+            _exit_code(4)
+            return False
+
+
+    return True
+
 def _decompress(archive, dest):
     if not os.path.isdir(dest):
         _warn("Destination directory not found, ", dest, " cannot compress")
@@ -525,10 +761,18 @@ def _decompress(archive, dest):
         _warn("Source archive does not exists, ", archive)
         return False
 
-    if archive[-3:] == 'tgz':
+    if archive[-6:] == 'tar.gz':
         return _extract_tgz(archive, dest)
-    elif archive[-3:] == 'xgz':
+    elif archive[-6:] == 'xbs.gz':
         return _extract_xgz(archive, dest)
+    elif archive[-6:]  == 'xbs.qp':
+        return _extract_stream_qpress(archive, dest)
+    elif archive[-14:]  == 'xbs.qp.xbcrypt':
+        return _extract_stream_qpress(archive, dest)
+    elif archive[-2:] == 'qp':
+        return _extract_nostream_qpress(archive, dest)
+    elif archive[-10:] == 'qp.xbcrypt':
+        return _extract_nostream_qpress(archive, dest)
     else:
         _warn("Unknown archive format %s" % archive)
         return False
@@ -778,6 +1022,9 @@ def run_xb():
     global xb_info_prep_start
     global xb_info_prep_end
 
+    backup_fname = 'backup'
+    backup_archive = None
+
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
@@ -795,13 +1042,25 @@ def run_xb():
             and not _ssh_execute("mkdir -p %s" % xb_this_backup_remote):
         _die("Could not create remote directory to push backup to!")
 
-    if xb_opt_compress:
+    if xb_opt_compress and not xb_opt_apply_log:
         if xb_opt_compress_with == 'qpress':
             xb_ibx_opts += ' --compress --compress-threads=4'
 
         xb_ibx_opts += ' --stream=xbstream --parallel=4'
         xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
         os.mkdir(xb_this_backup)
+    else:
+        xb_ibx_opts += ' --parallel=4'
+
+    if xb_opt_encrypt and not xb_opt_apply_log:
+        xb_ibx_opts += ' --encrypt=%s --encrypt-threads=4 --encrypt-key-file=%s' % (
+            xb_opt_encrypt, xb_opt_encrypt_key_file)
+
+    # Check if rsync binary exists, if so let's use it for uncompressed 
+    # on-streaming backups
+    xb_rsync_bin = _which('rsync')
+    if xb_rsync_bin is not None and not xb_opt_compress and not xb_opt_remote_push_only:
+        xb_ibx_opts += ' --rsync'
 
     xb_ibx_opts += ' ' + xb_this_backup
 
@@ -826,17 +1085,28 @@ def run_xb():
                 p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=PIPE)
                 p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
 
+            if xb_opt_compress_with == 'qpress':
+                backup_fname = 'backup.xbs.qp'
+                pipe_cmd = "cat - >"
+            else:
+                backup_fname = 'backup.xbs.gz'
+                pipe_cmd = "gzip - >"
+
+            if xb_opt_encrypt:
+                backup_fname += '.xbcrypt'
+
             if xb_opt_remote_push_only:
-                if xb_opt_compress_with == 'qpress':
-                    pipe_cmd = "xbstream -x -C %s" % xb_this_backup_remote
-                else:
-                    pipe_cmd = "gzip - > %s/backup.xgz" % xb_this_backup_remote
-                
+                backup_archive = "%s/%s" % (xb_this_backup_remote, backup_fname)
+            else:
+                backup_archive = "%s/%s" % (xb_this_backup, backup_fname)
+
+            pipe_cmd = "%s %s" % (pipe_cmd, backup_archive)
+
+            if xb_opt_remote_push_only:
                 pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
                     xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
                 _debug('Piping backup to remote with "%s"' % pipe_cmd)
             else:
-                pipe_cmd = "gzip - > %s/backup.xgz" % xb_this_backup
                 _debug('Piping backup to gzip with "%s"' % pipe_cmd)
 
             p_cmp = Popen(pipe_cmd, stdin=p_ibx.stdout, shell=True)
@@ -912,7 +1182,7 @@ def run_xb():
             else:
                 t = "%s/%s/%s" % (xb_stor_incr, xb_last_full, xb_curdate)
 
-            if xb_opt_compress and xb_opt_compress_with == 'gzip':
+            if xb_opt_compress:
                 _say("Post apply-log, compressing ", xb_this_backup)
 
                 # Create base incremental folder if it does not exist yet
@@ -923,7 +1193,7 @@ def run_xb():
                 if not os.path.isdir(t): os.mkdir(t)
                 shutil.copy("%s/xtrabackup_checkpoints" % xb_this_backup,
                             "%s/xtrabackup_checkpoints" % t)
-                _compress(xb_this_backup, "%s/backup.tgz" % t)
+                _compress(xb_this_backup, "%s/backup" % t)
             else:
                 _say("Post apply-log, copying ", xb_this_backup)
                 if xb_opt_command == XB_CMD_FULL:
@@ -1625,6 +1895,8 @@ def init():
     global xb_opt_wipeout
     global xb_opt_first_binlog
     global xb_opt_binlog_binary
+    global xb_opt_encrypt
+    global xb_opt_encrypt_key_file
 
     xb_opt_config = xb_cwd + '/pyxbackup.cnf'
     xb_cfg = None
@@ -1732,6 +2004,10 @@ def init():
     parser.add_option('-X', '--i-am-absolutely-sure-wipeout', dest='wipeout', action="store_true",
         help='Confirm to **WIPEOUT** all backups with wipeout command! (cli)',
         default=False)
+    parser.add_option('', '--encrypt', dest='encrypt', type="string",
+        help='Whether to encrypt backups on storage')
+    parser.add_option('', '--encrypt-key-file', dest='encrypt_key_file', type="string",
+        help=('Key file for encrypting/decrypting backups'))
 
     (options, args) = parser.parse_args()
 
@@ -1832,6 +2108,12 @@ def init():
             if int(xb_cfg.get('pyxbackup', 'retention_weeks')) > 0:
                 xb_opt_retention_weeks = int(xb_cfg.get('pyxbackup', 'retention_weeks'))
 
+        if xb_cfg.has_option('pyxbackup', 'encrypt_key_file'):
+            xb_opt_encrypt_key_file = xb_cfg.get('pyxbackup', 'encrypt_key_file')
+
+        if xb_cfg.has_option('pyxbackup', 'encrypt'):
+            xb_opt_encrypt = xb_cfg.get('pyxbackup', 'encrypt')
+
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
     if options.mysql_host: xb_opt_mysql_host = options.mysql_host
@@ -1877,6 +2159,9 @@ def init():
     if options.retention_weeks > 0:
         xb_opt_retention_weeks = int(options.retention_weeks)
 
+    if options.encrypt: xb_opt_encrypt = options.encrypt
+    if options.encrypt_key_file: xb_opt_encrypt_key_file = options.encrypt_key_file
+
     if xb_cfg: _debug('Found config file: ', xb_opt_config)
 
     cmds = [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_LIST, XB_CMD_STAT, XB_CMD_PREP,
@@ -1894,6 +2179,17 @@ def init():
     if options.retention_sets is not None and options.retention_sets <= 0:
         _die("Invalid value for retention sets, ",
             "you should keep one or more backup sets!")
+
+    if xb_opt_encrypt and not os.path.isfile(xb_opt_encrypt_key_file):
+        _die("The specified key file does not exist!")
+
+    if xb_opt_encrypt and xb_opt_compress and xb_opt_compress_with == 'gzip':
+        _die("GZIP compression + encryption is not supported ",
+            "at the moment. Please use --compress-with=qpress instead.")
+
+    if xb_opt_encrypt and not xb_opt_compress:
+        _die("Encryption requires compression for now, support for ",
+            "uncompressed encrypted backup will be added in the future")
 
     if xb_opt_debug:
         _debug("Supplied options:")
@@ -2140,7 +2436,7 @@ try:
     _destroy_lock_file()
 
     if os.path.isfile(xb_log_file):
-        if xb_opt_remote_host:
+        if xb_opt_remote_host and xb_opt_command not in [XB_CMD_PREP, XB_CMD_APPL]:
             push_to_remote(xb_log_file, "%s/" % xb_this_backup_remote.rstrip('/'))
         _init_log_file(xb_log_file, True)
 
