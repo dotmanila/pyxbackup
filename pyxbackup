@@ -12,6 +12,8 @@ from ConfigParser import ConfigParser, NoOptionError
 from optparse import OptionParser
 from subprocess import Popen, PIPE, STDOUT, CalledProcessError
 
+XB_BIN_NAME = 'pyxbackup'
+
 xb_opt_config = None
 xb_opt_type = 'full'
 xb_opt_stor_dir = ''
@@ -39,7 +41,7 @@ xb_opt_restore_dir = None
 xb_opt_remote_stor_dir = None
 xb_opt_remote_host = None
 xb_opt_remote_push_only = None
-xb_opt_remote_script = 'pyxbackup'
+xb_opt_remote_script = XB_BIN_NAME
 xb_opt_ssh_opts = ''
 xb_opt_ssh_user = None
 xb_opt_notify_by_email = None
@@ -109,11 +111,11 @@ XB_CMD_WIPE = 'wipeout'
 XB_TAG_FILE = 'xtrabackup_checkpoints'
 XB_CKP_FILE = 'xtrabackup_checkpoints'
 XB_LCK_FILE = ''
-XB_META_FILE = 'xbackup.meta'
+XB_META_FILE = 'backup.meta'
 XB_BKP_LOG = 'innobackupex-backup.log'
 XB_APPLY_LOG = 'innobackupex-prepare.log'
-XB_LOG_NAME = 'pyxbackup.log'
-XB_SSH_TMPFILE = '/tmp/pyxbackup.py-ssh-result'
+XB_LOG_NAME = XB_BIN_NAME + '.log'
+XB_SSH_TMPFILE = '/tmp/' + XB_BIN_NAME + '-ssh-result'
 XB_SIGTERM_CAUGHT = False
 
 # What commands does not need a log or lock file
@@ -209,8 +211,8 @@ def _check_in_progress():
             _warn("Lock file exists, checking status from %s" % XB_LCK_FILE)
 
         cfp = _parse_raw_config(XB_LCK_FILE)
-        bkp = cfp.get('pyxbackup', 'backup')
-        tpe = cfp.get('pyxbackup', 'type')
+        bkp = cfp.get(XB_BIN_NAME, 'backup')
+        tpe = cfp.get(XB_BIN_NAME, 'type')
         xb_backup_in_progress = cfp
         ret = True
 
@@ -224,7 +226,7 @@ def _check_in_progress():
                 if os.path.isdir(t):
                     _warn("Full backup %s exists" % t)
             elif tpe == XB_CMD_INCR:
-                full = cfp.get('pyxbackup', 'full')
+                full = cfp.get(XB_BIN_NAME, 'full')
                 t = os.path.join(xb_stor_incr, full, bkp)
                 if os.path.isdir(t):
                     _warn("Incremental backup %s exists" % t)
@@ -261,7 +263,7 @@ def _parse_raw_config(ckpnt_f):
         defaults = dict([line.replace(' ','').rstrip("\n").split('=') for line in ckp])
 
     cfp = ConfigParser(defaults)
-    cfp.add_section('pyxbackup')
+    cfp.add_section(XB_BIN_NAME)
 
     return cfp
 
@@ -284,7 +286,7 @@ def _apply_log(bkp, incrdir, final=False):
     if not final:
         ibx_opts += " --redo-only"
 
-    if cfp.get('pyxbackup','backup_type') == 'incremental':
+    if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
         _say('Preparing incremental backup: ', bkp)
         ibx_opts += " --incremental-dir=%s %s" % (bkp, incrdir)
     else:
@@ -314,7 +316,7 @@ def _apply_log(bkp, incrdir, final=False):
 
         if r != 0: raise Exception("Non-zero exit of innobackupex command!")
 
-        if cfp.get('pyxbackup','backup_type') == 'incremental':
+        if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
             shutil.move(ibx_log,
                 "%s/%s-innobackupex-prepare.log" % (incrdir, xb_curdate))
         else:
@@ -334,16 +336,21 @@ def _apply_log(bkp, incrdir, final=False):
 def _prepare_backup(bkp, prep):
     prepare_success = False
 
-    meta_f = os.path.join(bkp, 'xbackup.meta')
+    # Backward compatibility with 'xbackup.meta'
+    meta_file = XB_META_FILE
+    if not os.path.isfile(os.path.join(bkp, meta_file)):
+        meta_file = 'xbackup.meta'
+
+    meta_f = os.path.join(bkp, meta_file)
     meta = _parse_raw_config(meta_f)
 
     if not meta:
         _die("Unable to read backup meta information, ",
             "%s corrupt?" % meta_f)
 
-    is_cmp = bool(int(meta.get('pyxbackup', 'compress')))
-    is_of_type = meta.get('pyxbackup', 'type')
-    this_bkp = meta.get('pyxbackup', 'backup')
+    is_cmp = bool(int(meta.get(XB_BIN_NAME, 'compress')))
+    is_of_type = meta.get(XB_BIN_NAME, 'type')
+    this_bkp = meta.get(XB_BIN_NAME, 'backup')
 
     # If the backup is compressed, we extract to the prepare path
     if is_cmp:
@@ -418,6 +425,7 @@ def _compress_qp(bkp, xbs):
     xbc_cmd = None
     qp = None
     xbc = None
+    FNULL = None
 
     if xb_opt_debug:
         qp_cmd = 'qpress -rvT4'
@@ -428,8 +436,11 @@ def _compress_qp(bkp, xbs):
         qp_cmd += 'o .'
         xbc_cmd = 'xbcrypt --encrypt-algo=%s --encrypt-key-file=%s --output=%s.qp.xbcrypt' % (
             xb_opt_encrypt, xb_opt_encrypt_key_file, xbs)
+        _debug("Encrypting with command: %s" % xbc_cmd)
     else:
         qp_cmd += ' . %s.qp' % xbs
+
+    _debug("Compressing with command: %s" % qp_cmd)
 
     if not xb_opt_debug:
         FNULL = open(os.devnull, 'w')
@@ -955,7 +966,7 @@ def _oldest_binlog_from_backup():
     try:
         meta_f = os.path.join(xb_stor_full, xb_full_list[-1:][0], XB_META_FILE)
         meta = _parse_raw_config(meta_f)
-        old_binlog = meta.get('pyxbackup', 'log_bin')
+        old_binlog = meta.get(XB_BIN_NAME, 'log_bin')
         _debug("Found binlog from oldest full backup, %s" % old_binlog)
 
         if old_binlog == 'None':
@@ -1368,8 +1379,8 @@ def run_status():
     if xb_opt_remote_push_only: _pre_run_xb()
 
     if xb_backup_in_progress is not None:
-        pid = int(xb_backup_in_progress.get('pyxbackup', 'pid'))
-        bkp = xb_backup_in_progress.get('pyxbackup', 'backup')
+        pid = int(xb_backup_in_progress.get(XB_BIN_NAME, 'pid'))
+        bkp = xb_backup_in_progress.get(XB_BIN_NAME, 'backup')
         if pid <= 0:
             ret = 2
             txt = 'Invalid PID file found!'
@@ -1489,13 +1500,13 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
     elif backup_is == XB_CMD_INCR:
         # First let's work on the full backup for this incremental
         the_backup_path = os.path.join(xb_stor_incr, full_backup, the_backup)
-        bkp_meta = os.path.join(the_backup_path, 'xbackup.meta')
+        bkp_meta = os.path.join(the_backup_path, XB_META_FILE)
         bkp_info = _parse_raw_config(bkp_meta)
 
         if not bkp_info:
             _die("Unable to read backup meta information, %s" % bkp_meta)
 
-        bkp_full = bkp_info.get('pyxbackup', 'full')
+        bkp_full = bkp_info.get(XB_BIN_NAME, 'full')
         current_bkp = os.path.join(xb_stor_full, bkp_full)
 
         if not _prepare_backup(current_bkp, prepare_path):
@@ -1537,7 +1548,7 @@ def run_xb_apply_last():
         return True
 
     full_ckp = _parse_raw_config(os.path.join(prepare_path, XB_CKP_FILE))
-    to_lsn = full_ckp.get('pyxbackup', 'to_lsn')
+    to_lsn = full_ckp.get(XB_BIN_NAME, 'to_lsn')
 
     if xb_incr_list[xb_last_full] is None:
         _say("No incremental backups taken for %s, we're done for now" % xb_last_full)
@@ -1553,9 +1564,9 @@ def run_xb_apply_last():
         if are_we_skippping:
             ckp = _parse_raw_config("%s/%s" % (bkp_path, XB_CKP_FILE))
             _debug("Incremental %s, from_lsn: %s, to_lsn: %s, last_lsn: %s" % (
-                bkp_path, ckp.get('pyxbackup', 'from_lsn'),
-                ckp.get('pyxbackup', 'to_lsn'), to_lsn))
-            if to_lsn > ckp.get('pyxbackup', 'from_lsn'):
+                bkp_path, ckp.get(XB_BIN_NAME, 'from_lsn'),
+                ckp.get(XB_BIN_NAME, 'to_lsn'), to_lsn))
+            if to_lsn > ckp.get(XB_BIN_NAME, 'from_lsn'):
                 continue
             else:
                 are_we_skippping = False
@@ -1799,10 +1810,10 @@ def push_to_remote(src, dst):
     p_scp = None
 
 
-    # We change our destination a bit if we are pushing
-    # a new incremental backup
-    if os.path.basename(src) == xb_curdate \
-            and os.path.basename(os.path.dirname(src)) == xb_last_full:
+    # If we are pushing an incremental and this is the first one for the set
+    # we traverse one level down so the full directory name is also created
+    # in one step
+    if xb_last_full == xb_last_backup:
         src_t = os.path.dirname(src).rstrip('/')
     else: src_t = src
 
@@ -1814,6 +1825,7 @@ def push_to_remote(src, dst):
         )
 
     _say("Pushing %s to remote host %s:%s" % (src, xb_opt_remote_host, dst))
+    _debug("Push command is: %s" % run_cmd)
 
     if not xb_opt_debug:
         FNULL = open(os.devnull, 'w')
@@ -1832,7 +1844,7 @@ def push_to_remote(src, dst):
     if r != 0:
         _error("Pushing ", src, " to remote ", dst, " failed.")
         _error("Push command was: ", run_cmd)
-        _error("rsync returned exit code was: ", str(r))
+        _error("scp returned exit code was: ", str(r))
         _exit_code(2)
         return False
 
@@ -1901,7 +1913,7 @@ def init():
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
 
-    xb_opt_config = xb_cwd + '/pyxbackup.cnf'
+    xb_opt_config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
     xb_cfg = None
 
     _init_log_file("/tmp/%s-%s" % (xb_curdate, XB_LOG_NAME))
@@ -1916,8 +1928,8 @@ def init():
         "restore-set: Restore to a specific backup set \n"
         "last-lsn: Print out to_lsn value of last backup for incremental use")
     p_epilog = ("Options here can also be specified on a filed called "
-        "pyxbackup.cnf on the same directory of the script or on a file "
-        "specified via the --config option")
+        "%s.cnf on the same directory of the script or "
+        "on a file specified via the --config option") % XB_BIN_NAME
     parser = OptionParser(p_usage, version="%prog " + str(xb_version),
         description=p_desc, epilog=p_epilog)
     parser.add_option('-f', '--config', dest='config', type='string',
@@ -1948,7 +1960,7 @@ def init():
             'handle this in the future!'))
     parser.add_option('-z', '--compress', dest='compress',  action="store_true",
         help='Compress backups, by default with gzip, see -Z')
-    parser.add_option('-Z', '--compress-with', dest='compress_with', default='gzip',
+    parser.add_option('-Z', '--compress-with', dest='compress_with',
         help='Compress backup with binary, default gzip, options (gzip, qpress)')
     parser.add_option('-M', '--notify-by-email', dest='notify_by_email',
         help='Send failed backup notifications to this address')
@@ -2036,89 +2048,89 @@ def init():
         xb_cfg = ConfigParser()
         xb_cfg.read(xb_opt_config)
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_host'):
-            xb_opt_mysql_host = xb_cfg.get('pyxbackup', 'mysql_host')
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_host'):
+            xb_opt_mysql_host = xb_cfg.get(XB_BIN_NAME, 'mysql_host')
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_user'):
-            xb_opt_mysql_user = xb_cfg.get('pyxbackup', 'mysql_user')
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_user'):
+            xb_opt_mysql_user = xb_cfg.get(XB_BIN_NAME, 'mysql_user')
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_pass'):
-            xb_opt_mysql_pass = xb_cfg.get('pyxbackup', 'mysql_pass')
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_pass'):
+            xb_opt_mysql_pass = xb_cfg.get(XB_BIN_NAME, 'mysql_pass')
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_port'):
-            xb_opt_mysql_port = int(xb_cfg.get('pyxbackup', 'mysql_port'))
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_port'):
+            xb_opt_mysql_port = int(xb_cfg.get(XB_BIN_NAME, 'mysql_port'))
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_sock'):
-            xb_opt_mysql_sock = xb_cfg.get('pyxbackup', 'mysql_sock')
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_sock'):
+            xb_opt_mysql_sock = xb_cfg.get(XB_BIN_NAME, 'mysql_sock')
 
-        if xb_cfg.has_option('pyxbackup', 'mysql_cnf'):
-            xb_opt_mysql_cnf = xb_cfg.get('pyxbackup', 'mysql_cnf')
+        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_cnf'):
+            xb_opt_mysql_cnf = xb_cfg.get(XB_BIN_NAME, 'mysql_cnf')
 
-        if xb_cfg.has_option('pyxbackup', 'stor_dir'):
-            xb_opt_stor_dir = xb_cfg.get('pyxbackup', 'stor_dir').rstrip('/')
+        if xb_cfg.has_option(XB_BIN_NAME, 'stor_dir'):
+            xb_opt_stor_dir = xb_cfg.get(XB_BIN_NAME, 'stor_dir').rstrip('/')
 
-        if xb_cfg.has_option('pyxbackup', 'work_dir'):
-            xb_opt_work_dir = xb_cfg.get('pyxbackup', 'work_dir').rstrip('/')
+        if xb_cfg.has_option(XB_BIN_NAME, 'work_dir'):
+            xb_opt_work_dir = xb_cfg.get(XB_BIN_NAME, 'work_dir').rstrip('/')
 
-        if xb_cfg.has_option('pyxbackup', 'ssh_opts'):
-            xb_opt_ssh_opts = xb_cfg.get('pyxbackup', 'ssh_opts')
+        if xb_cfg.has_option(XB_BIN_NAME, 'ssh_opts'):
+            xb_opt_ssh_opts = xb_cfg.get(XB_BIN_NAME, 'ssh_opts')
 
-        if xb_cfg.has_option('pyxbackup', 'ssh_user'):
-            xb_opt_ssh_user = xb_cfg.get('pyxbackup', 'ssh_user')
+        if xb_cfg.has_option(XB_BIN_NAME, 'ssh_user'):
+            xb_opt_ssh_user = xb_cfg.get(XB_BIN_NAME, 'ssh_user')
 
-        if xb_cfg.has_option('pyxbackup', 'remote_stor_dir'):
-            xb_opt_remote_stor_dir = xb_cfg.get('pyxbackup', 'remote_stor_dir').rstrip('/')
+        if xb_cfg.has_option(XB_BIN_NAME, 'remote_stor_dir'):
+            xb_opt_remote_stor_dir = xb_cfg.get(XB_BIN_NAME, 'remote_stor_dir').rstrip('/')
 
-        if xb_cfg.has_option('pyxbackup', 'remote_host'):
-            xb_opt_remote_host = xb_cfg.get('pyxbackup', 'remote_host')
+        if xb_cfg.has_option(XB_BIN_NAME, 'remote_host'):
+            xb_opt_remote_host = xb_cfg.get(XB_BIN_NAME, 'remote_host')
 
-        if xb_cfg.has_option('pyxbackup', 'remote_script'):
-            xb_opt_remote_script = xb_cfg.get('pyxbackup', 'remote_script')
+        if xb_cfg.has_option(XB_BIN_NAME, 'remote_script'):
+            xb_opt_remote_script = xb_cfg.get(XB_BIN_NAME, 'remote_script')
 
-        if xb_cfg.has_option('pyxbackup', 'remote_push_only'):
-            xb_opt_remote_push_only = bool(int(xb_cfg.get('pyxbackup', 'remote_push_only')))
+        if xb_cfg.has_option(XB_BIN_NAME, 'remote_push_only'):
+            xb_opt_remote_push_only = bool(int(xb_cfg.get(XB_BIN_NAME, 'remote_push_only')))
 
-        if xb_cfg.has_option('pyxbackup', 'copy_binlogs'):
-            xb_opt_copy_binlogs = bool(int(xb_cfg.get('pyxbackup', 'copy_binlogs')))
+        if xb_cfg.has_option(XB_BIN_NAME, 'copy_binlogs'):
+            xb_opt_copy_binlogs = bool(int(xb_cfg.get(XB_BIN_NAME, 'copy_binlogs')))
 
-        if xb_cfg.has_option('pyxbackup', 'binlog_binary'):
-            xb_opt_binlog_binary = xb_cfg.get('pyxbackup', 'binlog_binary')
+        if xb_cfg.has_option(XB_BIN_NAME, 'binlog_binary'):
+            xb_opt_binlog_binary = xb_cfg.get(XB_BIN_NAME, 'binlog_binary')
 
-        if xb_cfg.has_option('pyxbackup', 'compress'):
-            xb_opt_compress = bool(int(xb_cfg.get('pyxbackup', 'compress')))
+        if xb_cfg.has_option(XB_BIN_NAME, 'compress'):
+            xb_opt_compress = bool(int(xb_cfg.get(XB_BIN_NAME, 'compress')))
 
-        if xb_cfg.has_option('pyxbackup', 'compress_with'):
-            xb_opt_compress_with = xb_cfg.get('pyxbackup', 'compress_with')
+        if xb_cfg.has_option(XB_BIN_NAME, 'compress_with'):
+            xb_opt_compress_with = xb_cfg.get(XB_BIN_NAME, 'compress_with')
 
-        if xb_cfg.has_option('pyxbackup', 'notify_by_email'):
-            xb_opt_compress_with = xb_cfg.get('pyxbackup', 'notify_by_email')
+        if xb_cfg.has_option(XB_BIN_NAME, 'notify_by_email'):
+            xb_opt_compress_with = xb_cfg.get(XB_BIN_NAME, 'notify_by_email')
 
-        if xb_cfg.has_option('pyxbackup', 'apply_log'):
-            xb_opt_apply_log = bool(int(xb_cfg.get('pyxbackup', 'apply_log')))
+        if xb_cfg.has_option(XB_BIN_NAME, 'apply_log'):
+            xb_opt_apply_log = bool(int(xb_cfg.get(XB_BIN_NAME, 'apply_log')))
 
-        if xb_cfg.has_option('pyxbackup', 'prepare_memory'):
-            xb_opt_prepare_memory = xb_cfg.get('pyxbackup', 'prepare_memory')
+        if xb_cfg.has_option(XB_BIN_NAME, 'prepare_memory'):
+            xb_opt_prepare_memory = xb_cfg.get(XB_BIN_NAME, 'prepare_memory')
 
-        if xb_cfg.has_option('pyxbackup', 'retention_sets'):
-            if int(xb_cfg.get('pyxbackup', 'retention_sets')) > 0:
-                xb_opt_retention_sets = int(xb_cfg.get('pyxbackup', 'retention_sets'))
+        if xb_cfg.has_option(XB_BIN_NAME, 'retention_sets'):
+            if int(xb_cfg.get(XB_BIN_NAME, 'retention_sets')) > 0:
+                xb_opt_retention_sets = int(xb_cfg.get(XB_BIN_NAME, 'retention_sets'))
 
-        if xb_cfg.has_option('pyxbackup', 'retention_months'):
-            if int(xb_cfg.get('pyxbackup', 'retention_months')) > 0:
-                xb_opt_retention_months = int(xb_cfg.get('pyxbackup', 'retention_months'))
+        if xb_cfg.has_option(XB_BIN_NAME, 'retention_months'):
+            if int(xb_cfg.get(XB_BIN_NAME, 'retention_months')) > 0:
+                xb_opt_retention_months = int(xb_cfg.get(XB_BIN_NAME, 'retention_months'))
 
-        if xb_cfg.has_option('pyxbackup', 'retention_weeks'):
-            if int(xb_cfg.get('pyxbackup', 'retention_weeks')) > 0:
-                xb_opt_retention_weeks = int(xb_cfg.get('pyxbackup', 'retention_weeks'))
+        if xb_cfg.has_option(XB_BIN_NAME, 'retention_weeks'):
+            if int(xb_cfg.get(XB_BIN_NAME, 'retention_weeks')) > 0:
+                xb_opt_retention_weeks = int(xb_cfg.get(XB_BIN_NAME, 'retention_weeks'))
 
-        if xb_cfg.has_option('pyxbackup', 'encrypt_key_file'):
-            xb_opt_encrypt_key_file = xb_cfg.get('pyxbackup', 'encrypt_key_file')
+        if xb_cfg.has_option(XB_BIN_NAME, 'encrypt_key_file'):
+            xb_opt_encrypt_key_file = xb_cfg.get(XB_BIN_NAME, 'encrypt_key_file')
 
-        if xb_cfg.has_option('pyxbackup', 'encrypt'):
-            xb_opt_encrypt = xb_cfg.get('pyxbackup', 'encrypt')
+        if xb_cfg.has_option(XB_BIN_NAME, 'encrypt'):
+            xb_opt_encrypt = xb_cfg.get(XB_BIN_NAME, 'encrypt')
 
-        if xb_cfg.has_option('pyxbackup', 'extra_ibx_options'):
-            xb_opt_extra_ibx_options = xb_cfg.get('pyxbackup', 'extra_ibx_options')
+        if xb_cfg.has_option(XB_BIN_NAME, 'extra_ibx_options'):
+            xb_opt_extra_ibx_options = xb_cfg.get(XB_BIN_NAME, 'extra_ibx_options')
 
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass

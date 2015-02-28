@@ -11,9 +11,10 @@ Features
 
 - Can prepare a full + incrementals set with one command
 - Keep backups (full and/or incrementals) prepared on source or remote server
-- Compression with xbstream+gzip, tar+gzip
-- Stream backups directly to remote servers via SSH+rsync
-- Binary log streaming support
+- Compression with xbstream+gzip, tar+gzip, xbstream+qpress
+- Support for encryption on top of compression
+- Stream backups directly to remote servers via scp
+- Binary log streaming support with mysqlbinlog 5.6+
 
 Dependencies
 ============
@@ -47,10 +48,6 @@ Below are some valid options recognized from the configuration file:
     compress = 1
     # What compression tool, supports gzip and qpress
     compress_with = gzip
-    # Whether to copy binlogs, unused for now
-    copy_binlogs = 0
-    # Whether to specify --galera-info to innobackupex, unused
-    galera_info = 0
     # Send abckup failure notifications to
     notify_by_email = myemail@example.com
     # Where to stor raw (compressed) backups on the local directory
