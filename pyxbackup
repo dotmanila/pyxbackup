@@ -1688,6 +1688,11 @@ def run_binlog_stream():
                 FNULL = open(os.devnull, 'w')
                 p = Popen(run_cmd, shell=True, stdout=FNULL, stderr=FNULL)
 
+            pid_file = os.path.join('/tmp', "%s-binlog-stream.pid" % XB_BIN_NAME)
+            pid_file_h = open(pid_file, 'w')
+            pid_file_h.write(str(p.pid))
+            pid_file_h.close()
+
             r = p.poll()
             while r is None:
                 time.sleep(poll)
@@ -1851,7 +1856,10 @@ def push_to_remote(src, dst):
     # we traverse one level down so the full directory name is also created
     # in one step
     if xb_last_full == xb_last_backup:
-        src_t = os.path.dirname(src).rstrip('/')
+        if xb_opt_work_dir in src:
+            src_t = src.rstrip('/')
+        else:
+            src_t = os.path.dirname(src).rstrip('/')
     else: src_t = src
 
     # Unfortunately rsync will not work on all platforms with closed
