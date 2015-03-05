@@ -38,18 +38,25 @@ Below are some valid options recognized from the configuration file:
     mysql_user = msandbox
     mysql_pass = msandbox
     mysql_port = 56190
-    mysql_socket = /tmp/mysql.sock
+    mysql_sock = /tmp/mysql.sock
+    
     # Instructs the script to run prepare on a copy of the backup
-    # with redo-only. The scrip will maintain a copy of every
+    # with redo-only. The script will maintain a copy of every
     # backup inside work_dir and keep applying with redo-only
     # until the next full backup is executed
     apply_log = 1
+
     # Whether to compress backups
     compress = 1
     # What compression tool, supports gzip and qpress
     compress_with = gzip
-    # Send abckup failure notifications to
+
+    # Send abckup failure notifications to these addresses, separated by comma
     notify_by_email = myemail@example.com
+    # Send backup completion notifications to these adresses,
+    # separated by comma
+    notify_on_success = myemail@example.com
+
     # Where to stor raw (compressed) backups on the local directory
     # If --remote-push-only is specified, this is still needed but
     # they will not contain the actual backups, only meta information
@@ -59,9 +66,11 @@ Below are some valid options recognized from the configuration file:
     # backup will be kept and also stage as temp work dir if backups
     # compression is enabled
     work_dir = /sbx/msb/msb_5_6_190/bkp/work
+
     # When specified, this value will be passed as --defaults-file to
     # innobackupex
     mysql_cnf = /sbx/msb/msb_5_6_190/my.sandbox.cnf
+
     # When streaming/copying backups to remote site
     # this is the destination. It should have the same structure as
     # stor_dir with full, incr, weekly, monthly folders within
@@ -73,19 +82,23 @@ Below are some valid options recognized from the configuration file:
     ssh_opts = "-i /home/revin/.ssh/id_rsa"
     # The SSH user to use when streaming to remote
     ssh_user = root
+
     # When apply_log is enabled, this is how much memory in MB
     # will be used for --use-memory option with innobackupex
     prepare_memory = 128
+
     # How many sets of full + incrementals to keep in stor
     retention_sets = 2
     # How many archived weekly backups are kept, unused for now
     retention_weeks = 0
     # How many archived monthly backups are kept, unused for now
     retention_months = 0
+
     # Same functions as innobackupex --encrypt --encrypt-key-file options
     # to support for encrypted backups at rest
     encrypt = AES256
     encrypt_key_file = /path/to/backups/key
+
     # innobackupex has a lot of options not covered by this wrapper
     # therefore to support additional options, you can pass additional
     # parameters to innobackupex using this option. Enclose them in single or 
@@ -103,6 +116,82 @@ At the very least, you should have the ``stor_dir`` and ``work_dir`` directories
 
 If you are streaming files to remote server, you should also have, aside from the 2 directories previously mentioned, the ``remote_stor_dir`` precreated withe the full, incr, weekly and monthly folders created as well.
 
+Compressed Backups
+==================
+
+There are several types of compressed backups when the ``compress`` option is enabled and each can be decompressed manuall if needed in different ways:
+
+tar + gzip (*.tar.gz)
+---------------------
+
+This backup is a result when ``compress`` is enabled with combined with ``apply_log`` and ``compress_with=gzip``. Decompressing is fairly straighforward using the tar utility:
+
+    tar xzvf /path/to/backup.tar.gz -C /path/to/destination/folder
+
+
+Streamed + gzip (*.xbs.gz)
+--------------------------
+
+Same as tar+gz but without the ``apply-log`` option, because we can stream the backup directly, we use xbstream format for potential optimizations like ``rsync`` for local copies and ``parallel`` options.
+
+    gzip -cd /path/to/backup.xbs.gz | xbstream -x -C /path/to/destination/folder
+
+
+Non-Streamed qpress (*.qp)
+--------------------------
+
+Similar to tar+gz, but using qpress as compression binary for when ``apply-log`` is enabled.
+
+    qpress -d /path/to/backup.qp /path/to/destination/folder
+
+Streamed qpress (*.xbs.qp)
+--------------------------
+
+When ``apply-log`` is not used, and ``compress_with=qpress``, this will be the format. It takes 2 steps to prepare the backup before being used.
+    
+    cat /path/to/backup.xbs.qp | xbstream -x -C /path/to/destination/folder
+
+    innobackupex --decompress /path/to/destination/folder
+
+
+Encrypted Backups (*.qp.xbcrypt)
+--------------------------------
+
+When ``apply-log`` is enabled with encryption, compression is implicitly set to qpress. To decompress and decrypt, you can use a command like below:
+
+    xbcrypt --decrypt --encrypt-algo=ENCRYPT_ALGO \
+        --encrypt-key-file=/path/to/encryption/key \
+        --input=/path/to/backup.qp.xbcrypt \
+        | qpress -di /path/to/destination/folder
+
+
+Streamed Encrypted Backups (*.xbs.qp.xbcrypt)
+---------------------------------------------
+
+Similar to the previous format, except this is streamed with xbstream i.e. ``apply-log`` is disabled or ``remote_push_only`` is enabled.
+
+    xbcrypt --decrypt --encrypt-algo=ENCRYPT_ALGO \
+        --encrypt-key-file=/path/to/encryption/key \
+        --input=/path/to/backup.qp.xbcrypt \
+        | xbstream -x -C /path/to/destination/folder
+
+    innobackupex --decompress /path/to/destination/folder
+
+
+Binary Log Streaming
+====================
+
+Streaming binary logs can be done with the script via the ``binlog-stream`` command. The advantage of doing it via the script and the same configuration file as your backups is that it can keep track of your backups and automatically prune binary logs. For example, when your oldest full backup was taken 2 weeks ago, then your oldest binary log file on archive will correspond to that backup as well.
+
+Binary log streaming requires that you configure the ``mysql_host``, ``mysql_user``, ``mysql_pass`` options or on the command line. Additionally aside from ``REPLICATION SLAVE`` privilege, you also need ``REPLICATION CLIENT`` as te script uses ``SHOW BINARY LOGS`` command using the MySQL account.
+
+A simple invocation would look like:
+
+    pyxbackup binlog-stream
+
+In some cases, if you are backing up data from a slave but want to stream the binary logs from the master, the script needs to know this is what you want as the master and slave will have a different set of binary logs. For this, you can specify the option ``--binlog-from-master`` or set ``binlog_from_master=1`` on the configuration file.
+
+As mentioned above, bianry log streaming relies on the availability of your oldest full backup. If you do not have this, or simply want to override, you can specify the ``--first-binlog`` option with the name of the binary log from the server you want to stream from.
 
 Examples
 ========
@@ -112,6 +201,7 @@ Assuming I have a very minimal ``pyxbackup.cnf`` below:
     [pyxbackup]
     stor_dir = /sbx/msb/msb_5_6_190/bkp/stor
     work_dir = /sbx/msb/msb_5_6_190/bkp/work
+    retention_sets = 2
 
 Running a Full Backup
 ---------------------
