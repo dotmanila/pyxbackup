@@ -45,10 +45,12 @@ xb_opt_remote_script = XB_BIN_NAME
 xb_opt_ssh_opts = ''
 xb_opt_ssh_user = None
 xb_opt_notify_by_email = None
+xb_opt_notify_on_success = None
 xb_opt_meta_item = None
 xb_opt_wipeout = False
 xb_opt_first_binlog = False
 xb_opt_binlog_binary = None
+xb_opt_binlog_from_master = False
 xb_opt_encrypt = False
 xb_opt_encrypt_key_file = None
 xb_opt_extra_ibx_options = None
@@ -72,6 +74,7 @@ xb_xbs_bin = 'xbstream'
 xb_this_backup = None
 xb_this_backup_remote = None
 xb_this_binlog = None
+xb_this_master_binlog = None
 xb_last_full = None
 xb_last_incr = None
 xb_full_list = None
@@ -97,6 +100,7 @@ xb_log_fd = None
 xb_is_last_day_of_week = False
 xb_is_last_day_of_month = False
 xb_mysqldb = None
+xb_backup_summary = None
 
 XB_CMD_INCR = 'incr'
 XB_CMD_FULL = 'full'
@@ -236,6 +240,8 @@ def _check_in_progress():
     return ret
 
 def _write_backup_info():
+    global xb_backup_summary
+
     if (xb_opt_command == XB_CMD_FULL or xb_opt_command == XB_CMD_INCR):
         inf = open("%s/%s" % (xb_this_backup, XB_META_FILE), 'w')
         inf.write("backup = %s\n" % xb_curdate)
@@ -251,8 +257,27 @@ def _write_backup_info():
         inf.write("compress = %d\n" % int(xb_opt_compress))
         inf.write("compress_with = %s\n" % xb_opt_compress_with)
         inf.write("log_bin = %s\n" % xb_this_binlog)
+        inf.write("master_log_bin = %s\n" % xb_this_master_binlog)
 
         inf.close()
+
+    if xb_opt_notify_on_success:
+        xb_backup_summary = "Backup summary: \n\n"
+        xb_backup_summary += "Backup: %s\n" % xb_curdate
+        xb_backup_summary += "Type: %s\n" % xb_opt_command
+
+        if xb_opt_command == XB_CMD_INCR:
+            xb_backup_summary += "Full: %s\n" % xb_last_full
+
+        xb_backup_summary += "Backup started: %s\n" % xb_curdate
+        xb_backup_summary += "Backup ended: %s\n" % xb_curdate
+        xb_backup_summary += "Prepare started: %s\n" % xb_curdate
+        xb_backup_summary += "Prepare ended: %s\n" % xb_curdate
+        xb_backup_summary += "Compressed: %s\n" % bool(xb_opt_compress)
+        xb_backup_summary += "Compressed with: %s\n" % xb_opt_compress_with
+        xb_backup_summary += "Prepare ended: %s\n" % xb_curdate
+        xb_backup_summary += "Binary log name: %s\n" % xb_this_binlog
+        xb_backup_summary += "Master binary log name: %s\n" % xb_this_master_binlog
 
 def _parse_raw_config(ckpnt_f):
     if not os.path.isfile(ckpnt_f):
@@ -408,19 +433,12 @@ def _compress_qp(bkp, xbs):
     cwd = os.getcwd()
     os.chdir(bkp)
 
-    # @todo add backups compression with qpress compatible to
-    # innobackupex --compress results
-    # @ todo _compress* commands are used when --apply-log is enabled
-    #   backups are streamed to local uncompressed/unencrypted then a copy
-    #   is compressed/encrypted. make sure these commands results in 
-    #   compatible format with streaming - our option is to simplify and add 
-    #   a different file format instead
-    # @todo add support for --rsync
-
-    # @todo here add support for encryption
-
-    # *.xbq for qpress
-    # *.xbc for qpress, encrypted
+    # *.tar.gz tar+gzip compress either via innobackupex --stream=tar or
+    #       tar czvf . -
+    # *.qp cmopressed with qpress i.e. qpress -rvT4 .
+    # *.xbs.qp for streamed qpress i.e. innobackupex --stream --compress
+    # *.xbs.qp.xbcrypt for streamed qpress, encrypted 
+    #   i.e. innobackupex --stream --compress --encrypt
 
     xbc_cmd = None
     qp = None
@@ -855,6 +873,7 @@ def _cleanup_dir(folder, excludes = []):
 
 def _get_binlog_info_from_log(logfile):
     global xb_this_binlog
+    global xb_this_master_binlog
 
     if not os.path.isfile(logfile): return False
 
@@ -868,15 +887,25 @@ def _get_binlog_info_from_log(logfile):
     m = None
     for l in lines:
         if 'MySQL binlog position' in l:
-            m = re.search('MySQL binlog position: filename \'(.*)\',', l)
-            break
+            m = re.search('filename \'(.*)\',', l)
+        
+        if 'MySQL slave binlog position' in l:
+            s = re.search('filename \'(.*)\'', l)
 
     if m is not None:
         _say("Found binary log name from log %s" % m.group(1))
         xb_this_binlog = m.group(1)
-    else: return False
 
-def _notify_by_email(subject, msg=""):
+    if s is not None:
+        _say("Found master binary log name from log %s" % s.group(1))
+        xb_this_master_binlog = s.group(1)
+
+def _notify_by_email(subject, msg="", to=None):
+    if to is not None:
+        recpt = to
+    else:
+        recpt = xb_opt_notify_by_email
+
     if os.path.isfile(xb_log_file):
         fp = open(xb_log_file, 'rb')
         log = fp.read()
@@ -885,10 +914,10 @@ def _notify_by_email(subject, msg=""):
 
     fr = "%s@%s" % (xb_user, xb_hostname)
     hdr = "From: %s\n" % fr
-    hdr += "To: %s\n" % xb_opt_notify_by_email
+    hdr += "To: %s\n" % recpt
     hdr += "Subject: %s\n\n" % subject
     s = smtplib.SMTP('localhost')
-    s.sendmail(fr, xb_opt_notify_by_email, hdr + msg)
+    s.sendmail(fr, recpt.split(','), hdr + msg)
     s.quit()
 
 def _ssh_execute(cmd, out=False):
@@ -960,13 +989,18 @@ def _pre_run_xb():
 def _oldest_binlog_from_backup():
     old_binlog = False
 
+    if xb_opt_binlog_from_master:
+        field_name = 'master_log_bin'
+    else:
+        field_name = 'log_bin'
+
     if xb_full_list is None or len(xb_full_list) <= 0:
         return False
 
     try:
         meta_f = os.path.join(xb_stor_full, xb_full_list[-1:][0], XB_META_FILE)
         meta = _parse_raw_config(meta_f)
-        old_binlog = meta.get(XB_BIN_NAME, 'log_bin')
+        old_binlog = meta.get(XB_BIN_NAME, field_name)
         _debug("Found binlog from oldest full backup, %s" % old_binlog)
 
         if old_binlog == 'None':
@@ -1620,6 +1654,9 @@ def run_binlog_stream():
     db_close()
     if xb_last_binlog is None: xb_last_binlog = old_binlog
 
+    _debug("old_binlog: %s, xb_last_binlog: %s, found_binlogs: %s" % (
+        old_binlog, xb_last_binlog, str(logs)))
+
     if old_binlog not in logs:
         _die("I cannot find our oldest binlog from the available binary logs ",
             "on the server, aborting! Try again with --first-binlog")
@@ -1856,7 +1893,7 @@ def db_connect():
     try:
         xb_mysqldb = MySQLdb.connect(
             xb_opt_mysql_host, xb_opt_mysql_user,
-            xb_opt_mysql_pass, 'mysql', xb_opt_mysql_port)
+            xb_opt_mysql_pass, '', xb_opt_mysql_port)
 
         # MySQLdb for some reason has autoccommit off by default
         xb_mysqldb.autocommit(True)
@@ -1905,9 +1942,11 @@ def init():
     global xb_opt_ssh_opts
     global xb_opt_ssh_user
     global xb_opt_notify_by_email
+    global xb_opt_notify_on_success
     global xb_opt_meta_item
     global xb_opt_wipeout
     global xb_opt_first_binlog
+    global xb_opt_binlog_from_master
     global xb_opt_binlog_binary
     global xb_opt_encrypt
     global xb_opt_encrypt_key_file
@@ -1963,7 +2002,9 @@ def init():
     parser.add_option('-Z', '--compress-with', dest='compress_with',
         help='Compress backup with binary, default gzip, options (gzip, qpress)')
     parser.add_option('-M', '--notify-by-email', dest='notify_by_email',
-        help='Send failed backup notifications to this address')
+        help='Send failed backup notifications to this address(es)')
+    parser.add_option('', '--notify-on-success', dest='notify_on_success',
+        help='Send success backup notifications to this address(es)')
     parser.add_option('-R', '--remote-stor-dir', dest='remote_stor_dir',
         help=('When --remote-host is not empty, backups to that host will be '
             'streamed to this directory, similar to --stor-dir'))
@@ -2010,6 +2051,10 @@ def init():
         help=('For binlog-stream, if the script cannot determine the oldest '
             'binary log filename from the backups to maintain the list of files '
             'to keep, we can specify it manually here'))
+    parser.add_option('', '--binlog-from-master', dest='binlog_from_master', action="store_true",
+        help=('For binlog-stream, when --slave-info is enabled on the backups '
+            'and you want to stream binary logs from the master instead '
+            'this tells the script to determine the correct binary log file name'))
     parser.add_option('-l', '--binlog-binary', dest='binlog_binary', type="string",
         help=('For binlog-stream, specify where the 5.6+ mysqlbinlog utility '
             'is located'))
@@ -2096,6 +2141,9 @@ def init():
         if xb_cfg.has_option(XB_BIN_NAME, 'binlog_binary'):
             xb_opt_binlog_binary = xb_cfg.get(XB_BIN_NAME, 'binlog_binary')
 
+        if xb_cfg.has_option(XB_BIN_NAME, 'binlog_from_master'):
+            xb_opt_binlog_from_master = xb_cfg.get(XB_BIN_NAME, 'binlog_from_master')
+
         if xb_cfg.has_option(XB_BIN_NAME, 'compress'):
             xb_opt_compress = bool(int(xb_cfg.get(XB_BIN_NAME, 'compress')))
 
@@ -2103,7 +2151,10 @@ def init():
             xb_opt_compress_with = xb_cfg.get(XB_BIN_NAME, 'compress_with')
 
         if xb_cfg.has_option(XB_BIN_NAME, 'notify_by_email'):
-            xb_opt_compress_with = xb_cfg.get(XB_BIN_NAME, 'notify_by_email')
+            xb_opt_notify_by_email = xb_cfg.get(XB_BIN_NAME, 'notify_by_email')
+
+        if xb_cfg.has_option(XB_BIN_NAME, 'notify_on_success'):
+            xb_opt_notify_on_success = xb_cfg.get(XB_BIN_NAME, 'notify_on_success')
 
         if xb_cfg.has_option(XB_BIN_NAME, 'apply_log'):
             xb_opt_apply_log = bool(int(xb_cfg.get(XB_BIN_NAME, 'apply_log')))
@@ -2144,8 +2195,10 @@ def init():
     if options.compress: xb_opt_compress = options.compress
     if options.compress_with: xb_opt_compress_with = options.compress_with
     if options.notify_by_email: xb_opt_notify_by_email = options.notify_by_email
+    if options.notify_on_success: xb_opt_notify_on_success = options.notify_on_success
     if options.first_binlog: xb_opt_first_binlog = options.first_binlog
     if options.binlog_binary: xb_opt_binlog_binary = options.binlog_binary
+    if options.binlog_from_master: xb_opt_binlog_from_master = options.binlog_from_master
 
     if options.remote_stor_dir: xb_opt_remote_stor_dir = options.remote_stor_dir
     if options.remote_host: xb_opt_remote_host = options.remote_host
@@ -2463,6 +2516,10 @@ try:
 
     if xb_exit_code > 0 and xb_opt_notify_by_email:
         _notify_by_email("MySQL backup script at %s has errors!" % xb_hostname)
+    elif xb_opt_notify_on_success and xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR]:
+        _notify_by_email(
+            "MySQL backup script at %s completed successfully!" % xb_hostname,
+            xb_backup_summary, xb_opt_notify_on_success)
 
     sys.exit(xb_exit_code)
 
