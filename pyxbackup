@@ -885,6 +885,8 @@ def _get_binlog_info_from_log(logfile):
 
     lines = lines[-20:]
     m = None
+    s = None
+
     for l in lines:
         if 'MySQL binlog position' in l:
             m = re.search('filename \'(.*)\',', l)
