@@ -108,6 +108,11 @@ Below are some valid options recognized from the configuration file:
     # fashion by pyxbackup. 
     extra_ibx_options = '--slave-info --galera-info'
 
+    # When using Percona Server with Changed Page Tracking enabled, the
+    # script can also purge the bitmaps automatically provided that it is
+    # configured with valid credentials with SUPER privileges
+    purge_bitmaps = 1
+
 
 Minimum Configuration
 =====================

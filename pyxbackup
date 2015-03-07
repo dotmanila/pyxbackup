@@ -54,6 +54,7 @@ xb_opt_binlog_from_master = False
 xb_opt_encrypt = False
 xb_opt_encrypt_key_file = None
 xb_opt_extra_ibx_options = None
+xb_opt_purge_bitmaps = None
 
 xb_hostname = None
 xb_user = None
@@ -75,6 +76,7 @@ xb_this_backup = None
 xb_this_backup_remote = None
 xb_this_binlog = None
 xb_this_master_binlog = None
+xb_this_last_lsn = None
 xb_last_full = None
 xb_last_incr = None
 xb_full_list = None
@@ -258,6 +260,7 @@ def _write_backup_info():
         inf.write("compress_with = %s\n" % xb_opt_compress_with)
         inf.write("log_bin = %s\n" % xb_this_binlog)
         inf.write("master_log_bin = %s\n" % xb_this_master_binlog)
+        inf.write("last_lsn = %s\n" % xb_this_last_lsn)
 
         inf.close()
 
@@ -999,8 +1002,14 @@ def _oldest_binlog_from_backup():
     if xb_full_list is None or len(xb_full_list) <= 0:
         return False
 
+    # Backward compatibility with 'xbackup.meta'
+    meta_file_dir = os.path.join(xb_stor_full, xb_full_list[-1:][0])
+    meta_file = XB_META_FILE
+    if not os.path.isfile(os.path.join(meta_file_dir, meta_file)):
+        meta_file = 'xbackup.meta'
+
     try:
-        meta_f = os.path.join(xb_stor_full, xb_full_list[-1:][0], XB_META_FILE)
+        meta_f = os.path.join(meta_file_dir, meta_file)
         meta = _parse_raw_config(meta_f)
         old_binlog = meta.get(XB_BIN_NAME, field_name)
         _debug("Found binlog from oldest full backup, %s" % old_binlog)
@@ -1019,6 +1028,25 @@ def _purge_binlogs_to(old_binlog):
             if l < old_binlog:
                 _say("Deleting old binary log %s" % l)
                 os.remove(os.path.join(xb_stor_binlogs, l))
+
+def _purge_bitmaps_to(lsn):
+    _say("Purging bitmap files to LSN: %s" % lsn)
+
+    if not db_connect():
+        _error("Failed to connect to server, unable to purge bitmaps.")
+        _exit_code(8)
+        return False
+
+    try:
+        cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
+        cur.execute("PURGE CHANGED_PAGE_BITMAPS BEFORE %s" % lsn)
+    except MySQLdb.OperationalError, e:
+        _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
+        _error("Failed to purge bitmaps!")
+        _exit_code(8)
+        return False
+
+    return True
 
 def run_wipeout():
     if not xb_opt_wipeout:
@@ -1068,6 +1096,7 @@ def run_xb():
     global xb_info_bkp_end
     global xb_info_prep_start
     global xb_info_prep_end
+    global xb_this_last_lsn
 
     backup_fname = 'backup'
     backup_archive = None
@@ -1207,6 +1236,10 @@ def run_xb():
 
     if xb_opt_command == XB_CMD_FULL and xb_backup_is_success:
         xb_full_list.insert(0, xb_curdate)
+
+    if xb_backup_is_success:
+        full_ckp = _parse_raw_config(os.path.join(xb_this_backup, XB_CKP_FILE))
+        xb_this_last_lsn = full_ckp.get(XB_BIN_NAME, 'last_lsn')
 
     # Cleanup work directory
     # First, move the innobackupex logfile to the actual backup directory
@@ -1380,6 +1413,9 @@ def run_xb_incr():
     xb_ibx_opts += ib
 
     run_xb()
+
+    if xb_opt_purge_bitmaps:
+        _purge_bitmaps_to(xb_this_last_lsn)
 
 def run_xb_list():
     """List existing "valid backups"""
@@ -1639,7 +1675,10 @@ def run_binlog_stream():
 
     _say("Maintaing binary logs from %s" % old_binlog)
 
-    db_connect()
+    if not db_connect():
+        _die("Failed to connect to remote host, ", 
+            "unable to check list of binary logs.")
+
     cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
     cur.execute('SHOW BINARY LOGS')
     logs = []
@@ -1659,7 +1698,7 @@ def run_binlog_stream():
     _debug("old_binlog: %s, xb_last_binlog: %s, found_binlogs: %s" % (
         old_binlog, xb_last_binlog, str(logs)))
 
-    if old_binlog not in logs:
+    if old_binlog not in logs and not int(old_binlog[-6:]) <= int(xb_last_binlog[-6:]):
         _die("I cannot find our oldest binlog from the available binary logs ",
             "on the server, aborting! Try again with --first-binlog")
 
@@ -1667,10 +1706,24 @@ def run_binlog_stream():
         _die("I cannot find our newest binlog from the available binary logs ",
             "on the server, aborting! Try again with --first-binlog")
 
-    run_cmd_s = ("%s --read-from-remote-server --raw --stop-never "
-        "--user=%s --host=%s --port=%d --password=%s" % (
-            mysqlbinlog, xb_opt_mysql_user, xb_opt_mysql_host,
-            xb_opt_mysql_port, xb_opt_mysql_pass))
+    run_cmd_s = mysqlbinlog
+
+    if xb_opt_mysql_cnf is not None:
+        run_cmd_s += " --defaults-file=%s" % xb_opt_mysql_cnf
+
+    run_cmd_s += " --read-from-remote-server --raw --stop-never"
+
+    if xb_opt_mysql_user is not None:
+        run_cmd_s += " --user=%s" % xb_opt_mysql_user
+
+    if xb_opt_mysql_pass is not None:
+        run_cmd_s += " --password=%s" % xb_opt_mysql_pass
+
+    if xb_opt_mysql_host is not None:
+        run_cmd_s += " --host=%s" % xb_opt_mysql_host
+
+    if xb_opt_mysql_port is not None:
+        run_cmd_s += " --port=%s" % xb_opt_mysql_port
 
     run_failures = 0
     sleeps = 0
@@ -1900,15 +1953,29 @@ def push_to_remote(src, dst):
 def db_connect():
     global xb_mysqldb
 
+    params = dict()
+
+    if xb_opt_mysql_user is not None:
+        params['user'] = xb_opt_mysql_user
+
+    if xb_opt_mysql_pass is not None:
+        params['passwd'] = xb_opt_mysql_pass
+
+    params['db'] = ''
+    params['port'] = xb_opt_mysql_port
+
+    if xb_opt_mysql_cnf is not None:
+        params['read_default_file'] = xb_opt_mysql_cnf
+        params['read_default_group'] = 'client'
+
     try:
-        xb_mysqldb = MySQLdb.connect(
-            xb_opt_mysql_host, xb_opt_mysql_user,
-            xb_opt_mysql_pass, '', xb_opt_mysql_port)
+        xb_mysqldb = MySQLdb.connect(xb_opt_mysql_host, **params)
 
         # MySQLdb for some reason has autoccommit off by default
         xb_mysqldb.autocommit(True)
     except MySQLdb.Error, e:
-        _die("Error ", e.args[0], ": ", e.args[1])
+        _error("Error ", e.args[0], ": ", e.args[1])
+        return False
 
     return xb_mysqldb
 
@@ -1961,6 +2028,7 @@ def init():
     global xb_opt_encrypt
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
+    global xb_opt_purge_bitmaps
 
     xb_opt_config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
     xb_cfg = None
@@ -2081,6 +2149,10 @@ def init():
         help='Whether to encrypt backups on storage')
     parser.add_option('', '--encrypt-key-file', dest='encrypt_key_file', type="string",
         help=('Key file for encrypting/decrypting backups'))
+    parser.add_option('', '--purge-bitmaps', dest='purge_bitmaps',  action="store_true",
+        help=('If Changed Page Tracking is enabled, should we automatically '
+            'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
+            'with SUPER privieleges is specified.'))
 
     (options, args) = parser.parse_args()
 
@@ -2193,6 +2265,9 @@ def init():
         if xb_cfg.has_option(XB_BIN_NAME, 'extra_ibx_options'):
             xb_opt_extra_ibx_options = xb_cfg.get(XB_BIN_NAME, 'extra_ibx_options')
 
+        if xb_cfg.has_option(XB_BIN_NAME, 'purge_bitmaps'):
+            xb_opt_purge_bitmaps = xb_cfg.get(XB_BIN_NAME, 'purge_bitmaps')
+
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
     if options.mysql_host: xb_opt_mysql_host = options.mysql_host
@@ -2242,6 +2317,7 @@ def init():
     if options.encrypt: xb_opt_encrypt = options.encrypt
     if options.encrypt_key_file: xb_opt_encrypt_key_file = options.encrypt_key_file
     if options.extra_ibx_options: xb_opt_extra_ibx_options = options.extra_ibx_options
+    if options.purge_bitmaps: xb_opt_purge_bitmaps = options.purge_bitmaps
 
     if xb_cfg: _debug('Found config file: ', xb_opt_config)
 
