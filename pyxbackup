@@ -273,12 +273,11 @@ def _write_backup_info():
             xb_backup_summary += "Full: %s\n" % xb_last_full
 
         xb_backup_summary += "Backup started: %s\n" % xb_curdate
-        xb_backup_summary += "Backup ended: %s\n" % xb_curdate
-        xb_backup_summary += "Prepare started: %s\n" % xb_curdate
-        xb_backup_summary += "Prepare ended: %s\n" % xb_curdate
+        xb_backup_summary += "Backup ended: %s\n" % xb_info_bkp_end
+        xb_backup_summary += "Prepare started: %s\n" % xb_info_prep_start
+        xb_backup_summary += "Prepare ended: %s\n" % xb_info_prep_end
         xb_backup_summary += "Compressed: %s\n" % bool(xb_opt_compress)
         xb_backup_summary += "Compressed with: %s\n" % xb_opt_compress_with
-        xb_backup_summary += "Prepare ended: %s\n" % xb_curdate
         xb_backup_summary += "Binary log name: %s\n" % xb_this_binlog
         xb_backup_summary += "Master binary log name: %s\n" % xb_this_master_binlog
 
@@ -1440,7 +1439,8 @@ def run_xb_list():
         print "# Monthly list: %s" % str(xb_monthly_list)
 
     if xb_binlogs_list is not None and len(xb_binlogs_list) > 0:
-        print "# Binary logs list: %s" % str(xb_binlogs_list)
+        print "# Binary logs from %s to %s, %d total" % (
+            xb_binlogs_list[0], xb_binlogs_list[-1], len(xb_binlogs_list))
 
 def run_status():
     """Display status of last backup - excludes any currently running backup"""
