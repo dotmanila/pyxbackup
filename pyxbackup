@@ -920,7 +920,7 @@ def _notify_by_email(subject, msg="", to=None):
     hdr = "From: %s\n" % fr
     hdr += "To: %s\n" % recpt
     hdr += "Subject: %s\n\n" % subject
-    s = smtplib.SMTP('localhost')
+    s = smtplib.SMTP('127.0.0.1')
     s.sendmail(fr, recpt.split(','), hdr + msg)
     s.quit()
 
