@@ -1,0 +1,15 @@
+[pyxbackup]
+stor_dir=/sbx/msb/rsandbox_5_6_220/bkp/local/stor
+work_dir=/sbx/msb/rsandbox_5_6_220/bkp/local/work
+#remote_push_only=1
+#compress=1
+compress_with=qpress
+retention_sets=7
+retention_weeks=6
+remote_stor_dir=/sbx/msb/rsandbox_5_6_220/bkp/remote/stor
+ssh_user=revin
+remote_script=python /sbx/msb/rsandbox_5_6_220/pyxbackup/pyxbackup --config=/sbx/msb/rsandbox_5_6_220/pyxbackup/pyxbackup-remote.cnf
+remote_host=127.0.0.1
+mysql_cnf=/sbx/msb/rsandbox_5_6_220/node1/my.sandbox.cnf
+#encrypt=AES256
+encrypt_key_file=/sbx/msb/rsandbox_5_6_220/bkp/backups.key
