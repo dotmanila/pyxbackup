@@ -1,8 +1,0 @@
-[pyxbackup]
-stor_dir=/sbx/msb/rsandbox_5_6_220/bkp/remote/stor
-work_dir=/sbx/msb/rsandbox_5_6_220/bkp/remote/work
-#compress=1
-retention_sets=7
-retention_weeks=6
-#encrypt=AES256
-encrypt_key_file=/sbx/msb/rsandbox_5_6_220/bkp/backups.key
