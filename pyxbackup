@@ -160,7 +160,8 @@ def _error(*msgs):
 
 def _die(*msgs):
     _out('FATAL', *msgs)
-    sys.exit(255)
+    _exit_code(255)
+    raise Exception(str(msgs))
 
 def _debug(*msgs):
     if xb_opt_debug: _out("** DEBUG **", *msgs)
