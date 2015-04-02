@@ -1671,8 +1671,10 @@ def run_binlog_stream():
             "there are any existing binlogs yet. Please try with --first-binlog ",
             "option to specify the first binlog to start copying")
 
-    if not old_binlog: old_binlog = xb_opt_first_binlog
     if not old_binlog: old_binlog = xb_first_binlog
+
+    # An explicit first-binlog takes precedence
+    if xb_opt_first_binlog: old_binlog = xb_opt_first_binlog
 
     _say("Maintaing binary logs from %s" % old_binlog)
 
