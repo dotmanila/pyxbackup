@@ -1,11 +1,11 @@
 #!/usr/bin/python
 
-# xbackup - Robust Xtrabackup based MySQL Backups Manager
+# pyxbackup - Robust Xtrabackup based MySQL Backups Manager
 #
 # @author Jervin Real <jervin.real@percona.com>
 
 import sys, traceback, os, errno, signal
-import time, calendar, shutil, re
+import time, calendar, shutil, re, pwd
 import smtplib, MySQLdb
 from datetime import datetime, timedelta
 from ConfigParser import ConfigParser, NoOptionError
@@ -210,35 +210,29 @@ def _check_in_progress():
     ret = False
     is_backup = False
 
-    if (xb_opt_command == XB_CMD_FULL or xb_opt_command == XB_CMD_INCR):
+    if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR]:
         is_backup = True
 
     if os.path.isfile(XB_LCK_FILE):
-        if is_backup:
-            _warn("Lock file exists, checking status from %s" % XB_LCK_FILE)
+        _debug("%s lock file exists and is_backup is %s" % (XB_LCK_FILE, str(is_backup)))
 
         cfp = _parse_raw_config(XB_LCK_FILE)
-        bkp = cfp.get(XB_BIN_NAME, 'backup')
-        tpe = cfp.get(XB_BIN_NAME, 'type')
+        pid = int(cfp.get(XB_BIN_NAME, 'pid'))
         xb_backup_in_progress = cfp
         ret = True
 
         if is_backup:
-            t = os.path.join(xb_opt_work_dir, bkp)
-            if os.path.isdir(t):
-                _warn("Work backup %s exists" % t)
-
-            if tpe == XB_CMD_FULL:
-                t = os.path.join(xb_stor_full, bkp)
-                if os.path.isdir(t):
-                    _warn("Full backup %s exists" % t)
-            elif tpe == XB_CMD_INCR:
-                full = cfp.get(XB_BIN_NAME, 'full')
-                t = os.path.join(xb_stor_incr, full, bkp)
-                if os.path.isdir(t):
-                    _warn("Incremental backup %s exists" % t)
-
-            _die('Cannot run backup, another backup is in progress')
+            try:
+                os.kill(pid, 0)
+            except OSError, e:
+                if e.errno == errno.ESRCH:
+                    _die('pyxbackup lock file exists but process is not running')
+                elif e.errno == errno.EPERM:
+                    _die('Permission denied while checking backup process')
+                else:
+                    _warn('Could not determine backup process state')
+            else:
+                _die("Another backup process in progress with PID %d" % pid)
 
     return ret
 
@@ -1210,7 +1204,8 @@ def run_xb():
                 p_ibx = Popen(run_cmd, shell=True, stderr=PIPE)
                 p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
 
-        _say("Running xtrabackup with command: ", run_cmd)
+        _say("Running xtrabackup with command: ", 
+            re.sub('\s--password=([^\s]+)', ' --password=*******', run_cmd))
 
         r = p_ibx.poll()
         while r is None:
@@ -2548,7 +2543,7 @@ try:
     xb_curdate = date(time.time(), '%Y_%m_%d-%H_%M_%S')
     xb_cwd = os.path.dirname(os.path.realpath(__file__))
     xb_hostname = os.uname()[1]
-    xb_user = os.environ["USER"]
+    xb_user = pwd.getpwuid(os.getuid())[0]
 
     dt = datetime.strptime(xb_curdate, '%Y_%m_%d-%H_%M_%S')
     if dt.weekday() == 6:
@@ -2567,8 +2562,8 @@ try:
     list_backups()
     os.chdir(xb_opt_work_dir)
 
+    XB_LCK_FILE = os.path.join(xb_opt_work_dir, "%s.lock" % XB_BIN_NAME)
     if not _check_in_progress():
-        XB_LCK_FILE = os.path.join(xb_opt_work_dir, 'xbackup.lck')
         _create_lock_file()
 
     if xb_opt_command == XB_CMD_FULL:
