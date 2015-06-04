@@ -133,6 +133,32 @@ def date(unixtime, format = '%m/%d/%Y %H:%M:%S'):
     d = datetime.fromtimestamp(unixtime)
     return d.strftime(format)
 
+def _xb_version():
+    global XB_VERSION_MAJOR
+    global XB_VERSION_MINOR
+    global XB_VERSION_REV
+
+    p = Popen(["xtrabackup", "--version"], stdout=PIPE, stderr=PIPE)
+    
+    # weird, xtrabackup outputs version string on STDERR instead of STDOUT
+    out, err = p.communicate()
+
+    ver = re.search('version ([^\s]+)', err)
+    major, minor, rev = ver.group(1).split('.')
+    
+    XB_VERSION_MAJOR = int(major)
+    XB_VERSION_MINOR = int(minor)
+    XB_VERSION_REV = int(rev)
+
+    if XB_VERSION_MAJOR < 1:
+        _error(
+            "Invalid xtrabackup version or unable to determine valid " 
+            "version string.")
+        _error("Version string was \"%s\"" % err)
+        _die("Exiting")
+
+    return True
+
 def _out(tag, *msgs):
     s = ''
 
@@ -673,32 +699,13 @@ def _extract_stream_qpress(xbs, dest):
         _exit_code(4)
         return False
 
-    # Now we compress *.qp files
-    ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
-
-    if not xb_opt_debug:
-        FNULL = open(os.devnull, 'w')
-        ibx = Popen(ibx_cmd, shell=True, stdout=FNULL, stderr=FNULL)
+    if XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4:
+        _say(
+            "You are running an older xtrabackup version "
+            "that do not --decompress support, switching manual deompresssion")
+        return _extract_qp_decompress(dest)
     else:
-        ibx = Popen(ibx_cmd, shell=True)
-
-    r = ibx.poll()
-    while r is None:
-        time.sleep(5)
-        r = ibx.poll()
-
-    if FNULL is not None:
-        FNULL.close()
-
-    if r != 0:
-        _error("Decompressing *.qp files failed.")
-        _error("Extract command was: %s" % ibx_cmd)
-        _error("Extract returned exit code was: %s" % str(r))
-        _exit_code(4)
-        return False
-
-
-    return True
+        return _extract_ibx_decompress(dest)
 
 def _extract_nostream_qpress(qp, dest):
     xbc_cmd = None
@@ -775,6 +782,60 @@ def _extract_nostream_qpress(qp, dest):
             _exit_code(4)
             return False
 
+    return True
+
+def _extract_qp_decompress(dest):
+    for root, dirs, files in os.walk(dest):
+        for f in files:
+            if f.endswith('.qp'):
+                _debug("Found %s to decompress" % os.path.join(root, f))
+                extract_qp_file(os.path.join(root, f))
+                os.remove(os.path.join(root, f))
+
+    return True
+
+def extract_qp_file(file):
+    qp_cmd = "qpress -d %s %s" % (file, os.path.dirname(file).rstrip('/'))
+    qp = Popen(qp_cmd, shell=True)
+
+    r = qp.poll()
+    while r is None:
+        time.sleep(5)
+        r = qp.poll()
+
+    if r != 0:
+        _error("Decompressing %s failed." % file)
+        _error("Extract command was: %s" % qp_cmd)
+        _error("Extract returned exit code was: %s" % str(r))
+        _exit_code(4)
+        _die("Aborting")
+
+    return True
+
+def _extract_ibx_decompress(dest):
+    # Now we decompress *.qp files
+    ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        ibx = Popen(ibx_cmd, shell=True, stdout=FNULL, stderr=FNULL)
+    else:
+        ibx = Popen(ibx_cmd, shell=True)
+
+    r = ibx.poll()
+    while r is None:
+        time.sleep(5)
+        r = ibx.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Decompressing *.qp files failed.")
+        _error("Extract command was: %s" % ibx_cmd)
+        _error("Extract returned exit code was: %s" % str(r))
+        _exit_code(4)
+        return False
 
     return True
 
@@ -1618,7 +1679,7 @@ def run_xb_apply_last():
     full_ckp = _parse_raw_config(os.path.join(prepare_path, XB_CKP_FILE))
     to_lsn = full_ckp.get(XB_BIN_NAME, 'to_lsn')
 
-    if xb_incr_list[xb_last_full] is None:
+    if xb_last_full not in xb_incr_list or xb_incr_list[xb_last_full] is None:
         _say("No incremental backups taken for %s, we're done for now" % xb_last_full)
         return True
 
@@ -2346,6 +2407,18 @@ def init():
         _die("Encryption requires compression for now, support for ",
             "uncompressed encrypted backup will be added in the future")
 
+    if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
+        bin_innobackupex = _which('innobackupex')
+        if bin_innobackupex is None:
+            _die("innobackupex script is not found in PATH")
+
+        bin_xtrabackup = _which('xtrabackup')
+        if bin_xtrabackup is None:
+            die("xtrabackup binary is not found in PATH")
+
+    # store xtrabackup version numbers
+    _xb_version()
+
     if xb_opt_debug:
         _debug("Supplied options:")
         for x, v in options.__dict__.items():
@@ -2614,5 +2687,9 @@ except Exception, e:
             traceback.format_exc())
 
     traceback.print_exc()
-    _die("An exception error has occurred!")
+    _error("An exception error has occurred!")
+    if xb_exit_code > 0:
+        sys.exit(xb_exit_code)
+
+    sys.exit(255)
 
