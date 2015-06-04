@@ -106,7 +106,11 @@ Below are some valid options recognized from the configuration file:
     # manually. Take into account to not conflict with options like
     # --compress, --encrypt*, --remote* as these are used in extended 
     # fashion by pyxbackup. 
-    extra_ibx_options = '--slave-info --galera-info'
+    #
+    # Note that anything after the equal sign is included, quotes are not 
+    # stripped since innobackupex can have options that will require quotes 
+    # i.e. --include=REGEXP
+    extra_ibx_options = --slave-info --galera-info
 
     # When using Percona Server with Changed Page Tracking enabled, the
     # script can also purge the bitmaps automatically provided that it is
