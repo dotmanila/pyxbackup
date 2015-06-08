@@ -123,6 +123,10 @@ XB_APPLY_LOG = 'innobackupex-prepare.log'
 XB_LOG_NAME = XB_BIN_NAME + '.log'
 XB_SSH_TMPFILE = '/tmp/' + XB_BIN_NAME + '-ssh-result'
 XB_SIGTERM_CAUGHT = False
+XB_VERSION_MAJOR = 0
+XB_VERSION_MINOR = 0
+XB_VERSION_REV = 0
+
 
 # What commands does not need a log or lock file
 cmd_no_log = [XB_CMD_LIST, XB_CMD_STAT, XB_CMD_META, XB_CMD_BINLOGS, XB_CMD_PRUNE]
@@ -143,12 +147,12 @@ def _xb_version():
     # weird, xtrabackup outputs version string on STDERR instead of STDOUT
     out, err = p.communicate()
 
-    ver = re.search('version ([^\s]+)', err)
+    ver = re.search('version ([\d\.]+)', err)
     major, minor, rev = ver.group(1).split('.')
     
-    XB_VERSION_MAJOR = int(major)
-    XB_VERSION_MINOR = int(minor)
-    XB_VERSION_REV = int(rev)
+    XB_VERSION_MAJOR = int(major) if major else 0
+    XB_VERSION_MINOR = int(minor) if minor else 0
+    XB_VERSION_REV = int(rev) if rev else 0
 
     if XB_VERSION_MAJOR < 1:
         _error(
@@ -156,6 +160,9 @@ def _xb_version():
             "version string.")
         _error("Version string was \"%s\"" % err)
         _die("Exiting")
+
+    _debug("Found xtrabackup version %d.%d.%d" % (
+        XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
 
     return True
 
@@ -699,10 +706,12 @@ def _extract_stream_qpress(xbs, dest):
         _exit_code(4)
         return False
 
-    if XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4:
+    if (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4) or \
+            XB_VERSION_MAJOR < 2 or (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR <= 0):
         _say(
             "You are running an older xtrabackup version "
-            "that do not --decompress support, switching manual deompresssion")
+            "that do not have --decompress support, "
+            "switching manual decompresssion")
         return _extract_qp_decompress(dest)
     else:
         return _extract_ibx_decompress(dest)
