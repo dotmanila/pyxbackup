@@ -67,7 +67,7 @@ xb_stor_binlogs = None
 xb_curdate = None
 xb_cfg = None
 xb_cwd = None
-xb_version = 0.2
+xb_version = 0.3
 xb_ibx_opts = ''
 xb_ibx_bin = 'innobackupex'
 xb_zip_bin = 'gzip'
@@ -206,6 +206,13 @@ def _which(file):
 
     return None
 
+def _check_binary(name):
+    bin = _which(name)
+    if bin is None:
+        _die("%s script is not found in $PATH" % bin)
+
+    return bin
+
 def _exit_code(code):
     global xb_exit_code
 
@@ -259,7 +266,7 @@ def _check_in_progress():
                 os.kill(pid, 0)
             except OSError, e:
                 if e.errno == errno.ESRCH:
-                    _die('pyxbackup lock file exists but process is not running')
+                    _die("%s lock file exists but process is not running" % XB_LCK_FILE)
                 elif e.errno == errno.EPERM:
                     _die('Permission denied while checking backup process')
                 else:
@@ -798,12 +805,12 @@ def _extract_qp_decompress(dest):
         for f in files:
             if f.endswith('.qp'):
                 _debug("Found %s to decompress" % os.path.join(root, f))
-                extract_qp_file(os.path.join(root, f))
+                _extract_qp_file(os.path.join(root, f))
                 os.remove(os.path.join(root, f))
 
     return True
 
-def extract_qp_file(file):
+def _extract_qp_file(file):
     qp_cmd = "qpress -d %s %s" % (file, os.path.dirname(file).rstrip('/'))
     qp = Popen(qp_cmd, shell=True)
 
@@ -970,24 +977,30 @@ def _get_binlog_info_from_log(logfile):
         xb_this_master_binlog = s.group(1)
 
 def _notify_by_email(subject, msg="", to=None):
-    if to is not None:
-        recpt = to
-    else:
-        recpt = xb_opt_notify_by_email
+    try:
+        if to is not None:
+            recpt = to
+        else:
+            recpt = xb_opt_notify_by_email
 
-    if os.path.isfile(xb_log_file):
-        fp = open(xb_log_file, 'rb')
-        log = fp.read()
-        fp.close()
-        msg = "%s\n\n%s" % (msg, log)
+        if os.path.isfile(xb_log_file):
+            fp = open(xb_log_file, 'rb')
+            log = fp.read()
+            fp.close()
+            msg = "%s\n\n%s" % (msg, log)
 
-    fr = "%s@%s" % (xb_user, xb_hostname)
-    hdr = "From: %s\n" % fr
-    hdr += "To: %s\n" % recpt
-    hdr += "Subject: %s\n\n" % subject
-    s = smtplib.SMTP('127.0.0.1')
-    s.sendmail(fr, recpt.split(','), hdr + msg)
-    s.quit()
+        fr = "%s@%s" % (xb_user, xb_hostname)
+        hdr = "From: %s\n" % fr
+        hdr += "To: %s\n" % recpt
+        hdr += "Subject: %s\n\n" % subject
+        s = smtplib.SMTP('127.0.0.1')
+        s.sendmail(fr, recpt.split(','), hdr + msg)
+        s.quit()
+    except Exception, e:
+        if xb_opt_debug: traceback.print_exc()
+        _die("Could not send mail ({0}): {1}".format(e.errno, e.strerror))
+
+    return True
 
 def _ssh_execute(cmd, out=False):
     r_cmd = "%s || echo 'CMD_FAIL'" % cmd
@@ -2098,24 +2111,39 @@ def init():
     global xb_opt_extra_ibx_options
     global xb_opt_purge_bitmaps
 
+    # http://stackoverflow.com/questions/1857346/\
+    # python-optparse-how-to-include-additional-info-in-usage-output
+    class PyxOptParser(OptionParser):
+        def format_epilog(self, formatter):
+            return self.epilog
+
     xb_opt_config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
     xb_cfg = None
 
     _init_log_file("/tmp/%s-%s" % (xb_curdate, XB_LOG_NAME))
 
-    p_usage = "Usage: %prog [options] command"
-    p_desc = ("Managed xtrabackup based backups. Valid commands are: "
-        "full: Execute full backups \n"
-        "incr: Execute incremental backups \n"
-        "list: List existing backups and additional information \n"
-        "status: Check status of last backup \n"
-        "apply-last: Prepare to the most recent backup \n"
-        "restore-set: Restore to a specific backup set \n"
-        "last-lsn: Print out to_lsn value of last backup for incremental use")
-    p_epilog = ("Options here can also be specified on a filed called "
-        "%s.cnf on the same directory of the script or "
-        "on a file specified via the --config option") % XB_BIN_NAME
-    parser = OptionParser(p_usage, version="%prog " + str(xb_version),
+    p_usage = "Usage: %prog [options] COMMAND"
+    p_desc = "Managed xtrabackup based backups."
+    p_epilog = """
+
+Options here can also be specified on a filed called %s.cnf on the 
+same directory of the script or on a file specified via the --config option
+
+Valid commands are:
+
+    full: Execute full backups
+    incr: Execute incremental backups
+    list: List existing backups and additional information
+    status: Check status of last backup
+    apply-last: Prepare to the most recent backup
+    restore-set: Restore to a specific backup set
+    last-lsn: Print out to_lsn value of last backup for incremental use
+    wipeout: Cleanup all existing backups
+
+"""
+    p_epilog = p_epilog % XB_BIN_NAME
+
+    parser = PyxOptParser(p_usage, version="%prog " + str(xb_version),
         description=p_desc, epilog=p_epilog)
     parser.add_option('-f', '--config', dest='config', type='string',
         help='Path to config file to use, useful for multiple back locations')
@@ -2417,16 +2445,28 @@ def init():
             "uncompressed encrypted backup will be added in the future")
 
     if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
-        bin_innobackupex = _which('innobackupex')
-        if bin_innobackupex is None:
-            _die("innobackupex script is not found in PATH")
-
-        bin_xtrabackup = _which('xtrabackup')
-        if bin_xtrabackup is None:
-            die("xtrabackup binary is not found in PATH")
+        _check_binary('innobackupex')
+        _check_binary('xtrabackup')
 
     # store xtrabackup version numbers
     _xb_version()
+
+    # we test email delivery beforehand to make sure it works
+    # this will happen only once as long as the sentinel file exists
+    # i.e. STOR_DIR/pyxbackup_mail_ok
+    mail_status_file = "%s/%s_mail_ok" % (xb_opt_stor_dir, XB_BIN_NAME)
+    if (xb_opt_notify_by_email or xb_opt_notify_on_success) and \
+            not os.path.isfile(mail_status_file):
+        mail_message = "This is a test message from %s@%s, please ignore." % (
+            xb_user, xb_hostname)
+        mail_subject = "pyxbackup Test Mail"
+        mail_to = xb_opt_notify_by_email \
+            if xb_opt_notify_by_email else xb_opt_notify_on_success
+
+        _say("Mail has not been tested, sending initial test mail.")
+
+        if _notify_by_email(mail_subject, mail_message, mail_to):
+            open(mail_status_file, 'a').close()
 
     if xb_opt_debug:
         _debug("Supplied options:")
@@ -2695,10 +2735,12 @@ except Exception, e:
             "MySQL backup script at %s exception!" % xb_hostname,
             traceback.format_exc())
 
-    traceback.print_exc()
-    _error("An exception error has occurred!")
     if xb_exit_code > 0:
         sys.exit(xb_exit_code)
+        if xb_opt_debug: traceback.print_exc()
+    else:
+        _error("An uncaught exception error has occurred!")
+        traceback.print_exc()
 
     sys.exit(255)
 
