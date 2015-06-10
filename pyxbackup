@@ -127,6 +127,17 @@ XB_VERSION_MAJOR = 0
 XB_VERSION_MINOR = 0
 XB_VERSION_REV = 0
 
+XB_EXIT_COMPRESS_FAIL       = 1
+XB_EXIT_REMOTE_PUSH_FAIL    = 2
+XB_EXIT_EXTRACT_FAIL        = 4
+XB_EXIT_BITMAP_PURGE_FAIL   = 8
+XB_EXIT_NO_FULL             = 16
+XB_EXIT_APPLY_FAIL          = 64
+XB_EXIT_INNOBACKUP_FAIL     = 65
+XB_EXIT_BINLOG_STREAM_FAIL  = 66
+XB_EXIT_REMOTE_CMD_FAIL     = 96
+XB_EXIT_BY_DEATH            = 128
+XB_EXIT_EXCEPTION           = 255
 
 # What commands does not need a log or lock file
 cmd_no_log = [XB_CMD_LIST, XB_CMD_STAT, XB_CMD_META, XB_CMD_BINLOGS, XB_CMD_PRUNE]
@@ -154,10 +165,10 @@ def _xb_version():
     XB_VERSION_MINOR = int(minor) if minor else 0
     XB_VERSION_REV = int(rev) if rev else 0
 
-    if XB_VERSION_MAJOR < 1:
+    if XB_VERSION_MAJOR == 0:
         _error(
             "Invalid xtrabackup version or unable to determine valid " 
-            "version string.")
+            "version string or binary version non-GA release")
         _error("Version string was \"%s\"" % err)
         _die("Exiting")
 
@@ -193,7 +204,7 @@ def _error(*msgs):
 
 def _die(*msgs):
     _out('FATAL', *msgs)
-    _exit_code(255)
+    _exit_code(XB_EXIT_BY_DEATH)
     raise Exception(str(msgs))
 
 def _debug(*msgs):
@@ -391,7 +402,7 @@ def _apply_log(bkp, incrdir, final=False):
         _error("Command was: ", ibx_cmd)
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
-        _exit_code(64)
+        _exit_code(XB_EXIT_APPLY_FAIL)
 
     return False
 
@@ -533,7 +544,7 @@ def _compress_qp(bkp, xbs):
             _error("xbcrypt command was: ", xbc_cmd)
             _error("xbcrypt returned exit code was: ", str(x))
 
-        _exit_code(4)
+        _exit_code(XB_EXIT_COMPRESS_FAIL)
         return False
 
     return True
@@ -580,7 +591,7 @@ def _compress_tgz(bkp, tgz):
         _error("Compressing ", bkp, " to ", tgz, " failed.")
         _error("tar command was: ", run_cmd)
         _error("tar returned exit code was: ", str(r))
-        _exit_code(2)
+        _exit_code(XB_EXIT_COMPRESS_FAIL)
         return False
 
     return True
@@ -613,7 +624,7 @@ def _extract_tgz(tgz, dest):
         _error("Extracting ", tgz, " to ", dest, " failed.")
         _error("tar command was: ", run_cmd)
         _error("tar returned exit code was: ", str(r))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
     return True
@@ -657,7 +668,7 @@ def _extract_xgz(xgz, dest):
         _error("Extracting ", xgz, " to ", dest, " failed.")
         _error("Extract command was: %s | %s" % (gz_cmd, xbs_cmd))
         _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
     return True
@@ -710,7 +721,7 @@ def _extract_stream_qpress(xbs, dest):
         _error("Extracting ", xbs, " to ", dest, " failed.")
         _error("Extract command was: %s | %s" % (xbc_cmd, xbs_cmd))
         _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
     if (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4) or \
@@ -780,7 +791,7 @@ def _extract_nostream_qpress(qp, dest):
             _error("Extracting ", qp, " to ", dest, " failed.")
             _error("Extract command was: %s | %s" % (xbc_cmd, qp_cmd))
             _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
-            _exit_code(4)
+            _exit_code(XB_EXIT_EXTRACT_FAIL)
             return False
     else:
         r = qp.poll()
@@ -795,7 +806,7 @@ def _extract_nostream_qpress(qp, dest):
             _error("Extracting ", qp, " to ", dest, " failed.")
             _error("Extract command was: %s" % qp_cmd, qp_cmd)
             _error("Extract returned exit codes was: %s" % str(r))
-            _exit_code(4)
+            _exit_code(XB_EXIT_EXTRACT_FAIL)
             return False
 
     return True
@@ -823,7 +834,7 @@ def _extract_qp_file(file):
         _error("Decompressing %s failed." % file)
         _error("Extract command was: %s" % qp_cmd)
         _error("Extract returned exit code was: %s" % str(r))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         _die("Aborting")
 
     return True
@@ -850,7 +861,7 @@ def _extract_ibx_decompress(dest):
         _error("Decompressing *.qp files failed.")
         _error("Extract command was: %s" % ibx_cmd)
         _error("Extract returned exit code was: %s" % str(r))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
     return True
@@ -1030,7 +1041,7 @@ def _ssh_execute(cmd, out=False):
 
         if r != 0:
             _error("SSH command failed with error code %s" % str(r))
-            _exit_code(96)
+            _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
             return False
 
         f = open(XB_SSH_TMPFILE)
@@ -1040,7 +1051,7 @@ def _ssh_execute(cmd, out=False):
             if 'CMD_FAIL' == err:
                 err = ', '.join(i.rstrip('\n') for i in l)
                 _error("Remote command failed \"%s\"" % err)
-                _exit_code(96)
+                _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
                 return False
             else:
                 return l[0:][0].rstrip('\n')
@@ -1050,7 +1061,7 @@ def _ssh_execute(cmd, out=False):
     except Exception, e:
         _error("Command was: ", ssh_cmd)
         _error("Error: process exited with status %s" % str(e))
-        _exit_code(96)
+        _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
         raise
 
 def _pre_run_xb():
@@ -1111,7 +1122,7 @@ def _purge_bitmaps_to(lsn):
 
     if not db_connect():
         _error("Failed to connect to server, unable to purge bitmaps.")
-        _exit_code(8)
+        _exit_code(XB_EXIT_BITMAP_PURGE_FAIL)
         return False
 
     try:
@@ -1120,7 +1131,7 @@ def _purge_bitmaps_to(lsn):
     except MySQLdb.OperationalError, e:
         _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
         _error("Failed to purge bitmaps!")
-        _exit_code(8)
+        _exit_code(XB_EXIT_BITMAP_PURGE_FAIL)
         return False
 
     return True
@@ -1309,7 +1320,7 @@ def run_xb():
         _error("Command was: ", run_cmd)
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
-        _exit_code(128)
+        _exit_code(XB_EXIT_INNOBACKUP_FAIL)
         raise
 
     if xb_opt_command == XB_CMD_FULL and xb_backup_is_success:
@@ -1448,7 +1459,9 @@ def run_xb_incr():
 
     _pre_run_xb()
     if xb_last_full == 'NULL' or xb_last_full is None:
-            _die('No available full backup from remote yet!')
+            _exit_code(XB_EXIT_NO_FULL)
+            _die('Incremental backup requested, '
+                'but there is no existing base full backup')
 
     if xb_opt_apply_log is False:
         xb_this_backup = os.path.join(xb_stor_incr, xb_last_full, xb_curdate)
@@ -1855,7 +1868,7 @@ def run_binlog_stream():
 
             if r != 0:
                 _error("mysqlbinlog command failed with error code %s" % str(r))
-                _exit_code(32)
+                _exit_code(XB_EXIT_BINLOG_STREAM_FAIL)
                 run_failures += 1
                 if run_failures == 10: return False
                 else:
@@ -1866,7 +1879,7 @@ def run_binlog_stream():
     except Exception, e:
         _error("Command was: ", run_cmd)
         _error("Error: process exited with status %s" % str(e))
-        _exit_code(32)
+        _exit_code(XB_EXIT_BINLOG_STREAM_FAIL)
         raise
 
     return True
@@ -1975,7 +1988,7 @@ def pull_from_remote(src, dst):
         _error("Pulling ", src, " from remote ", dst, " failed.")
         _error("Push command was: ", run_cmd)
         _error("rsync returned exit code was: ", str(r))
-        _exit_code(4)
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
     return True
@@ -2026,7 +2039,7 @@ def push_to_remote(src, dst):
         _error("Pushing ", src, " to remote ", dst, " failed.")
         _error("Push command was: ", run_cmd)
         _error("scp returned exit code was: ", str(r))
-        _exit_code(2)
+        _exit_code(XB_EXIT_REMOTE_PUSH_FAIL)
         return False
 
     return True
