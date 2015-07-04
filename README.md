@@ -12,8 +12,8 @@ Features
 - Can prepare a full + incrementals set with one command
 - Keep backups (full and/or incrementals) prepared on source or remote server
 - Compression with xbstream+gzip, tar+gzip, xbstream+qpress
-- Support for encryption on top of compression
-- Stream backups directly to remote servers via scp
+- Support for encryption on top of compression via Xtrabackup encryption
+- Stream backups directly to remote servers via scp or netcat, can also keep local copies
 - Binary log streaming support with mysqlbinlog 5.6+
 
 Dependencies
@@ -26,7 +26,9 @@ Also it requires that the xtrabackup binaries i.e. innobackupex, xtrabackup*, xb
 Configuration
 =============
 
-A file called ``pyxbackup.cnf`` can store configuration values. By default, the script looks for this file on the same directory where it is installed, it can also be specified from a manual location with the ``--config`` CLI option. Some configuration options are exclusive to the command line, they are marked with ``(cli)`` when executing ``pyxbackup.py --help``.
+A file called ``pyxbackup.cnf`` can store configuration values. By default, the script looks for this file from ``/etc/pyxbackup.cnf`` first, if not found, on the same directory where the script is installed. It can also be specified from a manual location with the ``--config`` CLI option. Some configuration options are exclusive to the command line, they are marked with ``(cli)`` when executing ``pyxbackup.py --help``.
+
+You can also use multiple configuration sections akin to MySQL's popular ``--defaults-group`` option in your ``pyxbackup.cnf``.
 
 Below are some valid options recognized from the configuration file:
 

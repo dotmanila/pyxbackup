@@ -15,6 +15,7 @@ from subprocess import Popen, PIPE, STDOUT, CalledProcessError
 XB_BIN_NAME = 'pyxbackup'
 
 xb_opt_config = None
+xb_opt_config_section = None
 xb_opt_type = 'full'
 xb_opt_stor_dir = ''
 xb_opt_work_dir = ''
@@ -2269,6 +2270,7 @@ def init():
     """Validate and populate all options/configuration values"""
 
     global xb_opt_config
+    global xb_opt_config_section
     global xb_opt_mysql_host
     global xb_opt_mysql_user
     global xb_opt_mysql_pass
@@ -2316,7 +2318,13 @@ def init():
         def format_epilog(self, formatter):
             return self.epilog
 
-    xb_opt_config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
+    xb_opt_config = "/etc/%s.cnf" % XB_BIN_NAME
+
+    if not os.path.isfile(xb_opt_config):
+        xb_opt_config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
+
+    xb_opt_config_section = XB_BIN_NAME
+    
     xb_cfg = None
 
     _init_log_file("/tmp/%s-%s" % (xb_curdate, XB_LOG_NAME))
@@ -2346,6 +2354,11 @@ Valid commands are:
         description=p_desc, epilog=p_epilog)
     parser.add_option('-f', '--config', dest='config', type='string',
         help='Path to config file to use, useful for multiple back locations')
+    parser.add_option('', '--config-section', dest='config_section', type='string',
+        help=('By default, config options are read from the %s section. '
+            'If you have multiple sections/profile in the configuration file '
+            'you can specify the section name, similar to mysql --defaults-group. '
+            '(cli)'))
     parser.add_option('-u', '--mysql-user', dest='mysql_user', type='string',
         help='MySQL server username')
     parser.add_option('-p', '--mysql-pass', dest='mysql_pass', type='string',
@@ -2469,108 +2482,110 @@ Valid commands are:
         else:
             _say("Using config file %s" % xb_opt_config)
 
-    if os.path.exists(xb_opt_config):
+    if options.config_section: xb_opt_config_section = options.config_section
+
+    if os.path.isfile(xb_opt_config):
         xb_cfg = ConfigParser()
         xb_cfg.read(xb_opt_config)
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_host'):
-            xb_opt_mysql_host = xb_cfg.get(XB_BIN_NAME, 'mysql_host')
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_host'):
+            xb_opt_mysql_host = xb_cfg.get(xb_opt_config_section, 'mysql_host')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_user'):
-            xb_opt_mysql_user = xb_cfg.get(XB_BIN_NAME, 'mysql_user')
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_user'):
+            xb_opt_mysql_user = xb_cfg.get(xb_opt_config_section, 'mysql_user')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_pass'):
-            xb_opt_mysql_pass = xb_cfg.get(XB_BIN_NAME, 'mysql_pass')
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_pass'):
+            xb_opt_mysql_pass = xb_cfg.get(xb_opt_config_section, 'mysql_pass')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_port'):
-            xb_opt_mysql_port = int(xb_cfg.get(XB_BIN_NAME, 'mysql_port'))
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_port'):
+            xb_opt_mysql_port = int(xb_cfg.get(xb_opt_config_section, 'mysql_port'))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_sock'):
-            xb_opt_mysql_sock = xb_cfg.get(XB_BIN_NAME, 'mysql_sock')
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_sock'):
+            xb_opt_mysql_sock = xb_cfg.get(xb_opt_config_section, 'mysql_sock')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'mysql_cnf'):
-            xb_opt_mysql_cnf = xb_cfg.get(XB_BIN_NAME, 'mysql_cnf')
+        if xb_cfg.has_option(xb_opt_config_section, 'mysql_cnf'):
+            xb_opt_mysql_cnf = xb_cfg.get(xb_opt_config_section, 'mysql_cnf')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'stor_dir'):
-            xb_opt_stor_dir = xb_cfg.get(XB_BIN_NAME, 'stor_dir').rstrip('/')
+        if xb_cfg.has_option(xb_opt_config_section, 'stor_dir'):
+            xb_opt_stor_dir = xb_cfg.get(xb_opt_config_section, 'stor_dir').rstrip('/')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'work_dir'):
-            xb_opt_work_dir = xb_cfg.get(XB_BIN_NAME, 'work_dir').rstrip('/')
+        if xb_cfg.has_option(xb_opt_config_section, 'work_dir'):
+            xb_opt_work_dir = xb_cfg.get(xb_opt_config_section, 'work_dir').rstrip('/')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'ssh_opts'):
-            xb_opt_ssh_opts = xb_cfg.get(XB_BIN_NAME, 'ssh_opts')
+        if xb_cfg.has_option(xb_opt_config_section, 'ssh_opts'):
+            xb_opt_ssh_opts = xb_cfg.get(xb_opt_config_section, 'ssh_opts')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'ssh_user'):
-            xb_opt_ssh_user = xb_cfg.get(XB_BIN_NAME, 'ssh_user')
+        if xb_cfg.has_option(xb_opt_config_section, 'ssh_user'):
+            xb_opt_ssh_user = xb_cfg.get(xb_opt_config_section, 'ssh_user')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'remote_stor_dir'):
-            xb_opt_remote_stor_dir = xb_cfg.get(XB_BIN_NAME, 'remote_stor_dir').rstrip('/')
+        if xb_cfg.has_option(xb_opt_config_section, 'remote_stor_dir'):
+            xb_opt_remote_stor_dir = xb_cfg.get(xb_opt_config_section, 'remote_stor_dir').rstrip('/')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'remote_host'):
-            xb_opt_remote_host = xb_cfg.get(XB_BIN_NAME, 'remote_host')
+        if xb_cfg.has_option(xb_opt_config_section, 'remote_host'):
+            xb_opt_remote_host = xb_cfg.get(xb_opt_config_section, 'remote_host')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'remote_script'):
-            xb_opt_remote_script = xb_cfg.get(XB_BIN_NAME, 'remote_script')
+        if xb_cfg.has_option(xb_opt_config_section, 'remote_script'):
+            xb_opt_remote_script = xb_cfg.get(xb_opt_config_section, 'remote_script')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'remote_push_only'):
-            xb_opt_remote_push_only = bool(int(xb_cfg.get(XB_BIN_NAME, 'remote_push_only')))
+        if xb_cfg.has_option(xb_opt_config_section, 'remote_push_only'):
+            xb_opt_remote_push_only = bool(int(xb_cfg.get(xb_opt_config_section, 'remote_push_only')))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'remote_nc_port'):
-            if not _parse_port_param(xb_cfg.get(XB_BIN_NAME, 'remote_nc_port')):
+        if xb_cfg.has_option(xb_opt_config_section, 'remote_nc_port'):
+            if not _parse_port_param(xb_cfg.get(xb_opt_config_section, 'remote_nc_port')):
                 parser.error("The specified port (range) is not valid")
             else:
-                xb_opt_remote_nc_port = xb_cfg.get(XB_BIN_NAME, 'remote_nc_port')
+                xb_opt_remote_nc_port = xb_cfg.get(xb_opt_config_section, 'remote_nc_port')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'copy_binlogs'):
-            xb_opt_copy_binlogs = bool(int(xb_cfg.get(XB_BIN_NAME, 'copy_binlogs')))
+        if xb_cfg.has_option(xb_opt_config_section, 'copy_binlogs'):
+            xb_opt_copy_binlogs = bool(int(xb_cfg.get(xb_opt_config_section, 'copy_binlogs')))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'binlog_binary'):
-            xb_opt_binlog_binary = xb_cfg.get(XB_BIN_NAME, 'binlog_binary')
+        if xb_cfg.has_option(xb_opt_config_section, 'binlog_binary'):
+            xb_opt_binlog_binary = xb_cfg.get(xb_opt_config_section, 'binlog_binary')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'binlog_from_master'):
-            xb_opt_binlog_from_master = xb_cfg.get(XB_BIN_NAME, 'binlog_from_master')
+        if xb_cfg.has_option(xb_opt_config_section, 'binlog_from_master'):
+            xb_opt_binlog_from_master = xb_cfg.get(xb_opt_config_section, 'binlog_from_master')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'compress'):
-            xb_opt_compress = bool(int(xb_cfg.get(XB_BIN_NAME, 'compress')))
+        if xb_cfg.has_option(xb_opt_config_section, 'compress'):
+            xb_opt_compress = bool(int(xb_cfg.get(xb_opt_config_section, 'compress')))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'compress_with'):
-            xb_opt_compress_with = xb_cfg.get(XB_BIN_NAME, 'compress_with')
+        if xb_cfg.has_option(xb_opt_config_section, 'compress_with'):
+            xb_opt_compress_with = xb_cfg.get(xb_opt_config_section, 'compress_with')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'notify_by_email'):
-            xb_opt_notify_by_email = xb_cfg.get(XB_BIN_NAME, 'notify_by_email')
+        if xb_cfg.has_option(xb_opt_config_section, 'notify_by_email'):
+            xb_opt_notify_by_email = xb_cfg.get(xb_opt_config_section, 'notify_by_email')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'notify_on_success'):
-            xb_opt_notify_on_success = xb_cfg.get(XB_BIN_NAME, 'notify_on_success')
+        if xb_cfg.has_option(xb_opt_config_section, 'notify_on_success'):
+            xb_opt_notify_on_success = xb_cfg.get(xb_opt_config_section, 'notify_on_success')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'apply_log'):
-            xb_opt_apply_log = bool(int(xb_cfg.get(XB_BIN_NAME, 'apply_log')))
+        if xb_cfg.has_option(xb_opt_config_section, 'apply_log'):
+            xb_opt_apply_log = bool(int(xb_cfg.get(xb_opt_config_section, 'apply_log')))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'prepare_memory'):
-            xb_opt_prepare_memory = xb_cfg.get(XB_BIN_NAME, 'prepare_memory')
+        if xb_cfg.has_option(xb_opt_config_section, 'prepare_memory'):
+            xb_opt_prepare_memory = xb_cfg.get(xb_opt_config_section, 'prepare_memory')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'retention_sets'):
-            if int(xb_cfg.get(XB_BIN_NAME, 'retention_sets')) > 0:
-                xb_opt_retention_sets = int(xb_cfg.get(XB_BIN_NAME, 'retention_sets'))
+        if xb_cfg.has_option(xb_opt_config_section, 'retention_sets'):
+            if int(xb_cfg.get(xb_opt_config_section, 'retention_sets')) > 0:
+                xb_opt_retention_sets = int(xb_cfg.get(xb_opt_config_section, 'retention_sets'))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'retention_months'):
-            if int(xb_cfg.get(XB_BIN_NAME, 'retention_months')) > 0:
-                xb_opt_retention_months = int(xb_cfg.get(XB_BIN_NAME, 'retention_months'))
+        if xb_cfg.has_option(xb_opt_config_section, 'retention_months'):
+            if int(xb_cfg.get(xb_opt_config_section, 'retention_months')) > 0:
+                xb_opt_retention_months = int(xb_cfg.get(xb_opt_config_section, 'retention_months'))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'retention_weeks'):
-            if int(xb_cfg.get(XB_BIN_NAME, 'retention_weeks')) > 0:
-                xb_opt_retention_weeks = int(xb_cfg.get(XB_BIN_NAME, 'retention_weeks'))
+        if xb_cfg.has_option(xb_opt_config_section, 'retention_weeks'):
+            if int(xb_cfg.get(xb_opt_config_section, 'retention_weeks')) > 0:
+                xb_opt_retention_weeks = int(xb_cfg.get(xb_opt_config_section, 'retention_weeks'))
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'encrypt_key_file'):
-            xb_opt_encrypt_key_file = xb_cfg.get(XB_BIN_NAME, 'encrypt_key_file')
+        if xb_cfg.has_option(xb_opt_config_section, 'encrypt_key_file'):
+            xb_opt_encrypt_key_file = xb_cfg.get(xb_opt_config_section, 'encrypt_key_file')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'encrypt'):
-            xb_opt_encrypt = xb_cfg.get(XB_BIN_NAME, 'encrypt')
+        if xb_cfg.has_option(xb_opt_config_section, 'encrypt'):
+            xb_opt_encrypt = xb_cfg.get(xb_opt_config_section, 'encrypt')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'extra_ibx_options'):
-            xb_opt_extra_ibx_options = xb_cfg.get(XB_BIN_NAME, 'extra_ibx_options')
+        if xb_cfg.has_option(xb_opt_config_section, 'extra_ibx_options'):
+            xb_opt_extra_ibx_options = xb_cfg.get(xb_opt_config_section, 'extra_ibx_options')
 
-        if xb_cfg.has_option(XB_BIN_NAME, 'purge_bitmaps'):
-            xb_opt_purge_bitmaps = xb_cfg.get(XB_BIN_NAME, 'purge_bitmaps')
+        if xb_cfg.has_option(xb_opt_config_section, 'purge_bitmaps'):
+            xb_opt_purge_bitmaps = xb_cfg.get(xb_opt_config_section, 'purge_bitmaps')
 
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
