@@ -117,6 +117,17 @@ Below are some valid options recognized from the configuration file:
     # configured with valid credentials with SUPER privileges
     purge_bitmaps = 1
 
+    # By default, when storing backups to a remote storage, scp/ssh streaming is
+    # used. If you want to use netcat, simply specify using this option the 
+    # netcat port to open on the remote server. The script will use SSH to connect
+    # to the remote server and open the nc port, make sure that the SSH user
+    # has the privilege to open the port i.e. try to use unprivileged port 
+    # instead.
+    #
+    # If you have multiple backups running at the same time and storing to the 
+    # same server, make sure to assign unique ports to each.
+    remote_nc_port=9999
+
 
 Minimum Configuration
 =====================

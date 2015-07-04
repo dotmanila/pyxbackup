@@ -6,7 +6,7 @@
 
 import sys, traceback, os, errno, signal
 import time, calendar, shutil, re, pwd
-import smtplib, MySQLdb
+import smtplib, MySQLdb, base64
 from datetime import datetime, timedelta
 from ConfigParser import ConfigParser, NoOptionError
 from optparse import OptionParser
@@ -42,6 +42,9 @@ xb_opt_remote_stor_dir = None
 xb_opt_remote_host = None
 xb_opt_remote_push_only = None
 xb_opt_remote_script = XB_BIN_NAME
+xb_opt_remote_nc_port = 0
+xb_opt_remote_nc_port_min = 0
+xb_opt_remote_nc_port_max = 0
 xb_opt_ssh_opts = ''
 xb_opt_ssh_user = None
 xb_opt_notify_by_email = None
@@ -140,7 +143,9 @@ XB_EXIT_BY_DEATH            = 128
 XB_EXIT_EXCEPTION           = 255
 
 # What commands does not need a log or lock file
-cmd_no_log = [XB_CMD_LIST, XB_CMD_STAT, XB_CMD_META, XB_CMD_BINLOGS, XB_CMD_PRUNE]
+cmd_no_log = [
+    XB_CMD_LIST, XB_CMD_STAT, XB_CMD_META, XB_CMD_BINLOGS, 
+    XB_CMD_PRUNE]
 cmd_no_lock = cmd_no_log
 cmd_backups = [XB_CMD_FULL, XB_CMD_INCR]
 
@@ -204,7 +209,7 @@ def _error(*msgs):
 
 def _die(*msgs):
     _out('FATAL', *msgs)
-    _exit_code(XB_EXIT_BY_DEATH)
+    if not xb_exit_code: _exit_code(XB_EXIT_BY_DEATH)
     raise Exception(str(msgs))
 
 def _debug(*msgs):
@@ -217,10 +222,41 @@ def _which(file):
 
     return None
 
+def _parse_port_param(param):
+    """
+    Parses and assign given port range values 
+    i.e.
+    remote_nc_port = 9999
+    remote_nc_port = 9999,1000
+    """
+
+    global xb_opt_remote_nc_port_min
+    global xb_opt_remote_nc_port_max
+
+    if not param: return False
+    if param.isdigit():
+        xb_opt_remote_nc_port_min = int(param)
+        xb_opt_remote_nc_port_max = xb_opt_remote_nc_port_min
+        return True
+    elif param.count(',') == 1:
+        pmin, pmax = param.split(',')
+        pmin = pmin.strip()
+        pmax = pmax.strip()
+        if not pmin.isdigit() or not pmax.isdigit(): return False
+        xb_opt_remote_nc_port_min = int(pmin)
+        xb_opt_remote_nc_port_max = int(pmax)
+        if xb_opt_remote_nc_port_min > xb_opt_remote_nc_port_max:
+            pmin = xb_opt_remote_nc_port_max
+            xb_opt_remote_nc_port_max = xb_opt_remote_nc_port_min
+            xb_opt_remote_nc_port_min = pmin
+        return True
+
+    return False
+
 def _check_binary(name):
     bin = _which(name)
     if bin is None:
-        _die("%s script is not found in $PATH" % bin)
+        _die("%s script is not found in $PATH" % name)
 
     return bin
 
@@ -1013,17 +1049,22 @@ def _notify_by_email(subject, msg="", to=None):
 
     return True
 
-def _ssh_execute(cmd, out=False):
-    r_cmd = "%s || echo 'CMD_FAIL'" % cmd
+def _ssh_execute(cmd, out=False, nowait=False):
+    r_cmd = "(%s) || echo 'CMD_FAIL'" % cmd
     ssh_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s \"%s\"" % (
         xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, r_cmd)
-    tmp_fd = os.open(XB_SSH_TMPFILE, os.O_WRONLY|os.O_CREAT|os.O_TRUNC)
     _debug("Executing remote command %s" % ssh_cmd)
 
     tee_cmd = "tee %s" % XB_SSH_TMPFILE
     p_tee = None
 
     try:
+        if nowait:
+            Popen(ssh_cmd, shell=True, close_fds=True)
+            return True
+
+        tmp_fd = os.open(XB_SSH_TMPFILE, os.O_WRONLY|os.O_CREAT|os.O_TRUNC)
+        
         if out and not xb_opt_quiet:
             p = Popen(ssh_cmd, shell=True, stdout=PIPE)
             p_tee = Popen(tee_cmd, shell=True, stdin=p.stdout)
@@ -1132,6 +1173,177 @@ def _purge_bitmaps_to(lsn):
         _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
         _error("Failed to purge bitmaps!")
         _exit_code(XB_EXIT_BITMAP_PURGE_FAIL)
+        return False
+
+    return True
+
+def _find_open_port():
+    """
+    Check for an open port via netstat
+    """
+
+    netstat = _which('netstat')
+    nc = _which('nc')
+    awk = _which('awk')
+    grep = _which('grep')
+    port = False
+
+    for p in range(xb_opt_remote_nc_port_min, xb_opt_remote_nc_port_max+1):
+        netstat_cmd = Popen([netstat, '-plnt'], stdout=PIPE)
+        awk_cmd = Popen([awk, ' {print $4}'], stdin=netstat_cmd.stdout, stdout=PIPE)
+        grep_cmd = Popen([grep, "\:%d" % p], stdin=awk_cmd.stdout, stdout=PIPE)
+        grep_cmd.communicate()
+
+        if int(grep_cmd.returncode) > 0:
+            port = p
+            break
+        else: continue
+
+    return port
+
+def _is_remote_nc_port_open(port):
+    # We only look for on specific line on the process tree
+    # this can be improved in the future
+    is_open = _ssh_execute(
+        "ps -f -u %s | egrep 'nc -l %d$'|wc -l" % (xb_opt_ssh_user, port))
+
+    return int(is_open)
+
+def _open_remote_nc_port(port, pipe_cmd):
+    is_open = _is_remote_nc_port_open(port)
+    
+    if is_open == 1:
+        _die("The requested port is already open on the remote server")
+    
+    for i in range(1, 4):
+        _ssh_execute(
+            "nc -l %d | %s" % (port, pipe_cmd), 
+            nowait=True)
+        time.sleep(5)
+
+        is_open = _is_remote_nc_port_open(port)
+        if is_open == 1: break
+        if is_open == 0 and xb_opt_debug:
+            _debug("Failed to open remote nc port after %d attempt" % i)
+
+    if is_open == 0:
+        _die("Could not open netcat port on remote server after 3 attempts")
+
+    return True
+
+def _close_remote_nc_port(port):
+    is_open = 0
+
+    for i in range(1, 4):
+        _ssh_execute(
+            "echo 'FORCE_CLOSE' | nc localhost %d" % port, 
+            nowait=True)
+        time.sleep(3)
+
+        is_open = _is_remote_nc_port_open(port)
+        if is_open == 0: break
+
+        if is_open == 1 and xb_opt_debug:
+            _debug("Failed to close remote nc port after %d attempt" % i)
+
+    if is_open == 1:
+        _debug("Failed to close remote netcat port after multiple attempts")
+        return False
+
+def _push_to_remote_scp(src, dst):
+    """
+    Push a backup folder to a remote location via scp or netcat
+    """
+
+    global xb_exit_code
+
+    FNULL = None
+    p_scp = None
+
+    # Unfortunately rsync will not work on all platforms with closed
+    # security policies, we will add this as an option in the future.
+    #run_cmd = "rsync -avz -e 'ssh -o PasswordAuthentication=no -q %s' %s %s@%s:%s" % (
+    run_cmd = "scp -r -o PasswordAuthentication=no -q %s %s %s@%s:%s" % (
+            xb_opt_ssh_opts, src, xb_opt_ssh_user, xb_opt_remote_host, dst
+        )
+
+    _say("Pushing %s to remote host %s:%s" % (src, xb_opt_remote_host, dst))
+    _debug("Push command is: %s" % str(run_cmd))
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        p_scp = Popen(run_cmd, shell=True, stdout=FNULL, stderr=STDOUT)
+    else:
+        p_scp = Popen(run_cmd, shell=True)
+
+    r = p_scp.poll()
+    while r is None:
+        time.sleep(3)
+        r = p_scp.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Pushing ", src, " to remote ", dst, " failed.")
+        _error("Push command was: ", run_cmd)
+        _error("scp returned exit code was: ", str(r))
+        _exit_code(XB_EXIT_REMOTE_PUSH_FAIL)
+        return False
+
+    return True
+
+def _push_to_remote_netcat(src, dst):
+    """
+    Push a file or a directory to a remote destination.
+    """
+
+    global xb_exit_code
+
+    FNULL = None
+    p_nc = None
+
+    nc_cmd = "nc %s %d" % (xb_opt_remote_host, xb_opt_remote_nc_port_min)
+
+    if os.path.isdir(src):
+        os.chdir(src)
+        tar_cmd = "tar -czf - ." 
+    else:
+        os.chdir(os.path.dirname(src))
+        tar_cmd = "tar -czf - %s" % os.path.basename(src)
+
+    _say("Pushing %s to remote host %s:%s" % (src, xb_opt_remote_host, dst))
+    _debug("Push command is: %s" % str(nc_cmd))
+
+    _open_remote_nc_port(xb_opt_remote_nc_port_min, "tar -C %s -xzf -" % dst)
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        p_tar = Popen(tar_cmd, shell=True, stdout=PIPE, stderr=FNULL)
+        p_nc = Popen(nc_cmd, shell=True, stdin=p_tar.stdout, stderr=FNULL)
+    else:
+        p_tar = Popen(tar_cmd, shell=True, stdout=PIPE)
+        p_nc = Popen(nc_cmd, shell=True, stdin=p_tar.stdout)
+
+    r = p_tar.poll()
+    while r is None:
+        time.sleep(3)
+        r = p_tar.poll()
+
+    x = p_nc.poll()
+    if x is None: p_nc.wait()
+    x = p_nc.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    os.chdir(xb_cwd)
+
+    if r != 0:
+        _error("Pushing ", src, " to remote ", dst, " failed.")
+        _error("Push command was: ", nc_cmd)
+        _error("scp returned exit code was: ", str(r))
+        _exit_code(XB_EXIT_REMOTE_PUSH_FAIL)
         return False
 
     return True
@@ -1245,13 +1457,6 @@ def run_xb():
         tee_cmd = "tee %s" % ibx_log
 
         if xb_opt_compress and not xb_opt_apply_log:
-            if not xb_opt_debug:
-                log_fd = os.open(ibx_log, os.O_WRONLY|os.O_CREAT)
-                p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=log_fd)
-            else:
-                p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=PIPE)
-                p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
-
             if xb_opt_compress_with == 'qpress':
                 backup_fname = 'backup.xbs.qp'
                 pipe_cmd = "cat - >"
@@ -1269,15 +1474,10 @@ def run_xb():
 
             pipe_cmd = "%s %s" % (pipe_cmd, backup_archive)
 
-            if xb_opt_remote_push_only:
-                pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
-                    xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
-                _debug('Piping backup to remote with "%s"' % pipe_cmd)
-            else:
-                _debug('Piping backup to gzip with "%s"' % pipe_cmd)
+            # We open the netcat port before opening the innobackupex process
+            if xb_opt_remote_push_only and xb_opt_remote_nc_port_min:
+                _open_remote_nc_port(xb_opt_remote_nc_port_min, pipe_cmd)
 
-            p_cmp = Popen(pipe_cmd, stdin=p_ibx.stdout, shell=True)
-        elif xb_opt_remote_push_only:
             if not xb_opt_debug:
                 log_fd = os.open(ibx_log, os.O_WRONLY|os.O_CREAT)
                 p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=log_fd)
@@ -1285,9 +1485,40 @@ def run_xb():
                 p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=PIPE)
                 p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
 
+            if xb_opt_remote_push_only:
+                if xb_opt_remote_nc_port_min:
+                    pipe_cmd = "nc %s %d" % (
+                        xb_opt_remote_host, xb_opt_remote_nc_port_min)
+                else:
+                    pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
+                        xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
+
+                _debug('Piping backup to remote with "%s"' % pipe_cmd)
+            else:
+                _debug('Compressing backup with "%s"' % pipe_cmd)
+
+            p_cmp = Popen(pipe_cmd, stdin=p_ibx.stdout, shell=True)
+        elif xb_opt_remote_push_only:
             pipe_cmd = "xbstream -x -C %s" % xb_this_backup_remote
-            pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
-                xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
+
+            # We open the netcat port before opening the innobackupex process
+            if xb_opt_remote_nc_port_min:
+                _open_remote_nc_port(xb_opt_remote_nc_port_min, pipe_cmd)
+
+            if not xb_opt_debug:
+                log_fd = os.open(ibx_log, os.O_WRONLY|os.O_CREAT)
+                p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=log_fd)
+            else:
+                p_ibx = Popen(run_cmd, shell=True, stdout=PIPE, stderr=PIPE)
+                p_tee = Popen(tee_cmd, shell=True, stdin=p_ibx.stderr)
+
+            if xb_opt_remote_nc_port_min:
+                pipe_cmd = "nc %s %d" % (
+                        xb_opt_remote_host, xb_opt_remote_nc_port_min)
+            else:
+                pipe_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s '%s'" % (
+                    xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, pipe_cmd)
+
             _debug('Piping backup to remote with "%s"' % pipe_cmd)
             p_cmp = Popen(pipe_cmd, stdin=p_ibx.stdout, shell=True)
         else:
@@ -1394,10 +1625,15 @@ def run_xb():
     #_init_log_file("%s/%s" % (xb_this_backup, XB_LOG_NAME))
 
     if xb_opt_remote_host:
-        push_to_remote(
-            xb_this_backup,
-            "%s/" % os.path.dirname(xb_this_backup_remote).rstrip('/')
-        )
+        _ssh_execute("mkdir -p %s" % xb_this_backup_remote)
+
+        if xb_opt_remote_nc_port_min:
+            _push_to_remote_netcat(xb_this_backup, xb_this_backup_remote)
+        else:
+            _push_to_remote_scp(
+                xb_this_backup,
+                "%s/" % os.path.dirname(xb_this_backup_remote)
+            ) 
 
     # Cleanup from our work directory to free up disk space.
     l = os.listdir(xb_opt_work_dir)
@@ -1993,57 +2229,6 @@ def pull_from_remote(src, dst):
 
     return True
 
-def push_to_remote(src, dst):
-    """Push a backup folder to a remote location via rsync+SSH"""
-    global xb_exit_code
-
-    FNULL = None
-    p_scp = None
-
-
-    # If we are pushing an incremental and this is the first one for the set
-    # we traverse one level down so the full directory name is also created
-    # in one step
-    if xb_last_full == xb_last_backup:
-        if xb_opt_work_dir in src:
-            src_t = src.rstrip('/')
-        else:
-            src_t = os.path.dirname(src).rstrip('/')
-    else: src_t = src
-
-    # Unfortunately rsync will not work on all platforms with closed
-    # security policies, we will add this as an option in the future.
-    #run_cmd = "rsync -avz -e 'ssh -o PasswordAuthentication=no -q %s' %s %s@%s:%s" % (
-    run_cmd = "scp -r -o PasswordAuthentication=no -q %s %s %s@%s:%s" % (
-            xb_opt_ssh_opts, src_t, xb_opt_ssh_user, xb_opt_remote_host, dst
-        )
-
-    _say("Pushing %s to remote host %s:%s" % (src, xb_opt_remote_host, dst))
-    _debug("Push command is: %s" % run_cmd)
-
-    if not xb_opt_debug:
-        FNULL = open(os.devnull, 'w')
-        p_scp = Popen(run_cmd, shell=True, stdout=FNULL, stderr=STDOUT)
-    else:
-        p_scp = Popen(run_cmd, shell=True)
-
-    r = p_scp.poll()
-    while r is None:
-        time.sleep(5)
-        r = p_scp.poll()
-
-    if FNULL is not None:
-        FNULL.close()
-
-    if r != 0:
-        _error("Pushing ", src, " to remote ", dst, " failed.")
-        _error("Push command was: ", run_cmd)
-        _error("scp returned exit code was: ", str(r))
-        _exit_code(XB_EXIT_REMOTE_PUSH_FAIL)
-        return False
-
-    return True
-
 def db_connect():
     global xb_mysqldb
 
@@ -2110,6 +2295,7 @@ def init():
     global xb_opt_remote_host
     global xb_opt_remote_script
     global xb_opt_remote_push_only
+    global xb_opt_remote_nc_port
     global xb_opt_ssh_opts
     global xb_opt_ssh_user
     global xb_opt_notify_by_email
@@ -2203,6 +2389,9 @@ Valid commands are:
     parser.add_option('-B', '--remote-script', dest='remote_script',
         help=('When --remote-push-only is enabled, we need to specify the '
             'path to this script on the remote server, default is xbackup.py'))
+    parser.add_option('', '--remote-nc-port', dest='remote_nc_port',
+        help=('When requesting to open a netcat port, this is the port number '
+            'to try with, can be a range separated with comma'))
     parser.add_option('-C', '--ssh-opts', dest='ssh_opts',
         help=('SSH options when streaming backups to remote host '
             'i.e. -i /path/to/identity file'))
@@ -2326,6 +2515,12 @@ Valid commands are:
         if xb_cfg.has_option(XB_BIN_NAME, 'remote_push_only'):
             xb_opt_remote_push_only = bool(int(xb_cfg.get(XB_BIN_NAME, 'remote_push_only')))
 
+        if xb_cfg.has_option(XB_BIN_NAME, 'remote_nc_port'):
+            if not _parse_port_param(xb_cfg.get(XB_BIN_NAME, 'remote_nc_port')):
+                parser.error("The specified port (range) is not valid")
+            else:
+                xb_opt_remote_nc_port = xb_cfg.get(XB_BIN_NAME, 'remote_nc_port')
+
         if xb_cfg.has_option(XB_BIN_NAME, 'copy_binlogs'):
             xb_opt_copy_binlogs = bool(int(xb_cfg.get(XB_BIN_NAME, 'copy_binlogs')))
 
@@ -2399,15 +2594,19 @@ Valid commands are:
     if options.remote_script: xb_opt_remote_script = options.remote_script
     if options.remote_push_only is not None:
         xb_opt_remote_push_only = options.remote_push_only
+    
+    if options.remote_nc_port is not None and \
+            not _parse_port_param(options.remote_nc_port):
+        parser.error("The specified port (range) is not valid")
+    else:
+        xb_opt_remote_nc_port = options.remote_nc_port
+
     if options.ssh_opts: xb_opt_ssh_opts = options.ssh_opts
     if options.ssh_user: xb_opt_ssh_user = options.ssh_user
     if options.meta_item: xb_opt_meta_item = options.meta_item
 
     if xb_opt_remote_host is not None and xb_opt_remote_stor_dir is None:
         parser.error("Remote host specified but, remote store directory is empty")
-
-    if xb_opt_remote_host is None and xb_opt_remote_stor_dir is not None:
-        parser.error("Remote store directory specified but, remote host is empty")
 
     if options.apply_log: xb_opt_apply_log = options.apply_log
     if options.prepare_memory: xb_opt_prepare_memory = options.prepare_memory
@@ -2460,6 +2659,10 @@ Valid commands are:
     if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
         _check_binary('innobackupex')
         _check_binary('xtrabackup')
+
+    if xb_opt_remote_nc_port_min:
+        _check_binary('nc')
+        _check_binary('netstat')
 
     # store xtrabackup version numbers
     _xb_version()
@@ -2727,7 +2930,7 @@ try:
 
     if os.path.isfile(xb_log_file):
         if xb_opt_remote_host and xb_opt_command not in [XB_CMD_PREP, XB_CMD_APPL]:
-            push_to_remote(xb_log_file, "%s/" % xb_this_backup_remote.rstrip('/'))
+            _push_to_remote_scp(xb_log_file, "%s/" % xb_this_backup_remote.rstrip('/'))
         _init_log_file(xb_log_file, True)
 
     if xb_log_fd is not None:
