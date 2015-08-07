@@ -2333,8 +2333,12 @@ def init():
     p_desc = "Managed xtrabackup based backups."
     p_epilog = """
 
-Options here can also be specified on a filed called %s.cnf on the 
-same directory of the script or on a file specified via the --config option
+Options here can also be specified on a filed called %s.cnf which will be 
+checked in this order:
+
+- on a file specified via the --config option
+- /etc/pyxbackup.cnf
+- on the same directory of the script 
 
 Valid commands are:
 
@@ -2358,7 +2362,7 @@ Valid commands are:
         help=('By default, config options are read from the %s section. '
             'If you have multiple sections/profile in the configuration file '
             'you can specify the section name, similar to mysql --defaults-group. '
-            '(cli)'))
+            '(cli)')  % XB_BIN_NAME)
     parser.add_option('-u', '--mysql-user', dest='mysql_user', type='string',
         help='MySQL server username')
     parser.add_option('-p', '--mysql-pass', dest='mysql_pass', type='string',
