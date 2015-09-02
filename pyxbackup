@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from ConfigParser import ConfigParser, NoOptionError
 from optparse import OptionParser
 from subprocess import Popen, PIPE, STDOUT, CalledProcessError
+from struct import unpack
 
 XB_BIN_NAME = 'pyxbackup'
 
@@ -25,7 +26,7 @@ xb_opt_mysql_host = 'localhost'
 xb_opt_mysql_port = 3306
 xb_opt_mysql_sock = '/tmp/mysql.sock'
 xb_opt_mysql_cnf = None
-xb_opt_copy_binlogs = False
+xb_opt_retention_binlogs = False
 xb_opt_compress = False
 xb_opt_compress_with = 'gzip'
 xb_opt_apply_log = False
@@ -92,6 +93,7 @@ xb_last_backup_is = None
 xb_first_binlog = None
 xb_last_binlog = None
 xb_binlogs_list = None
+xb_binlog_name = None
 xb_exit_code = 0
 xb_prepared_backup = ''
 xb_backup_is_success = False
@@ -1153,11 +1155,31 @@ def _oldest_binlog_from_backup():
     return old_binlog
 
 def _purge_binlogs_to(old_binlog):
-    if xb_binlogs_list is not None:
+    if xb_binlogs_list is None: return
+
+    if xb_opt_retention_binlogs is None:
         for l in xb_binlogs_list:
             if l < old_binlog:
                 _say("Deleting old binary log %s" % l)
                 os.remove(os.path.join(xb_stor_binlogs, l))
+    else:
+        x = int(time.time())-(xb_opt_retention_binlogs*24*60*60)
+        for l in xb_binlogs_list:
+            f = os.path.join(xb_stor_binlogs, l)
+            b = open(f, 'rb')
+            b.seek(4)
+            ts = unpack('I', b.read(4))[0]
+            ts_out = str(datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S'))
+            _debug("%s created at %s" % (l, ts_out))
+            b.close()
+
+            if ts < x: 
+                _debug("Pruning %s" % l)
+                os.remove(f)
+            else: 
+                _say("%s matches binary log retention period, stopping" % l)
+                break
+
 
 def _purge_bitmaps_to(lsn):
     _say("Purging bitmap files to LSN: %s" % lsn)
@@ -2279,7 +2301,7 @@ def init():
     global xb_opt_mysql_cnf
     global xb_opt_stor_dir
     global xb_opt_work_dir
-    global xb_opt_copy_binlogs
+    global xb_opt_retention_binlogs
     global xb_opt_compress
     global xb_opt_compress_with
     global xb_opt_apply_log
@@ -2380,8 +2402,8 @@ Valid commands are:
         help='Path to directory where backups are stored.')
     parser.add_option('-w', '--work-dir', dest='work_dir', type='string',
         help='Path to temporary backup work directory')
-    parser.add_option('-b', '--copy-binlogs', dest='copy_binlogs',  action="store_true",
-        help='Include binary logs on backups?')
+    parser.add_option('-b', '--retention-binlogs', dest='retention_binlogs', type="int",
+        help='Binary log period retention, in days')
     parser.add_option('', '--extra-ibx-options', dest='extra_ibx_options', type='string',
         help=('Specify additional innobackupex options, make sure to '
             'mind your quotes and avoid conflicts with --encrypt*, '
@@ -2540,8 +2562,8 @@ Valid commands are:
             else:
                 xb_opt_remote_nc_port = xb_cfg.get(xb_opt_config_section, 'remote_nc_port')
 
-        if xb_cfg.has_option(xb_opt_config_section, 'copy_binlogs'):
-            xb_opt_copy_binlogs = bool(int(xb_cfg.get(xb_opt_config_section, 'copy_binlogs')))
+        if xb_cfg.has_option(xb_opt_config_section, 'retention_binlogs'):
+            xb_opt_retention_binlogs = int(xb_cfg.get(xb_opt_config_section, 'retention_binlogs'))
 
         if xb_cfg.has_option(xb_opt_config_section, 'binlog_binary'):
             xb_opt_binlog_binary = xb_cfg.get(xb_opt_config_section, 'binlog_binary')
@@ -2599,7 +2621,7 @@ Valid commands are:
     if options.mysql_cnf: xb_opt_mysql_cnf = options.mysql_cnf
     if options.stor_dir: xb_opt_stor_dir = options.stor_dir.rstrip('/')
     if options.work_dir: xb_opt_work_dir = options.work_dir.rstrip('/')
-    if options.copy_binlogs: xb_opt_copy_binlogs = options.copy_binlogs
+    if options.retention_binlogs: xb_opt_retention_binlogs = options.retention_binlogs
     if options.compress: xb_opt_compress = options.compress
     if options.compress_with: xb_opt_compress_with = options.compress_with
     if options.notify_by_email: xb_opt_notify_by_email = options.notify_by_email
@@ -2876,15 +2898,29 @@ def list_binlogs():
     global xb_first_binlog
     global xb_last_binlog
     global xb_binlogs_list
+    global xb_binlog_name
 
     xb_binlogs_list = None
 
     l = os.listdir(xb_stor_binlogs)
     if len(l) > 0:
         for d in l:
-            if not os.path.isfile(os.path.join(xb_stor_binlogs, d)):
-                _debug("%s seems not a valid binary log, skipping" % d)
+            f = os.path.join(xb_stor_binlogs, d)
+            if not os.path.isfile(f):
+                _debug("%s is not a file, skipping" % d)
                 continue
+
+            # skip the magic number check if the name matches
+            # sort of an optimization to skip opening each file
+            # if you have thousands of binary logs
+            if xb_binlog_name and xb_binlog_name == d[0:-7]:
+                _debug("%s matches binary log name, appending" % d)
+            # we check the magic number for the binary log to validate
+            elif open(f, 'rb').read(4) != '\xfebin':
+                _debug("%s is not a valid binary log, skipping" % d)
+                continue
+            elif xb_binlog_name is None:
+                xb_binlog_name = d[0:-7]
 
             if xb_binlogs_list is None: xb_binlogs_list = []
             xb_binlogs_list.append(d)
