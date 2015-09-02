@@ -95,6 +95,11 @@ Below are some valid options recognized from the configuration file:
     retention_weeks = 0
     # How many archived monthly backups are kept, unused for now
     retention_months = 0
+    # When using binary log streaming, by default, the script will maintain
+    # the oldest binary log based on the oldest backup. This can be overridden 
+    # by setting a customer retention period for binary logs for special
+    # cases
+    retention_binlogs = 365
 
     # Same functions as innobackupex --encrypt --encrypt-key-file options
     # to support for encrypted backups at rest
@@ -213,7 +218,9 @@ A simple invocation would look like:
 
 In some cases, if you are backing up data from a slave but want to stream the binary logs from the master, the script needs to know this is what you want as the master and slave will have a different set of binary logs. For this, you can specify the option ``--binlog-from-master`` or set ``binlog_from_master=1`` on the configuration file.
 
-As mentioned above, bianry log streaming relies on the availability of your oldest full backup. If you do not have this, or simply want to override, you can specify the ``--first-binlog`` option with the name of the binary log from the server you want to stream from.
+As mentioned above, binary log streaming relies on the availability of your oldest full backup. If you do not have this, or simply want to override, you can specify the ``--first-binlog`` option with the name of the binary log from the server you want to stream from.
+
+Additionally, if you want a custom retention period i.e. longer than your oldest backup, ``--retention-binlogs`` can help. This is specified in the number of days and can be as far back as you want. This feature relies on the ``timestamp`` header of each binary log when pruning older copies and not on filesystem metadata.
 
 Examples
 ========
