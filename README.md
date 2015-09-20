@@ -143,6 +143,27 @@ At the very least, you should have the ``stor_dir`` and ``work_dir`` directories
 
 If you are streaming files to remote server, you should also have, aside from the 2 directories previously mentioned, the ``remote_stor_dir`` precreated withe the full, incr, weekly and monthly folders created as well.
 
+Quick Install
+=============
+
+First, create your local backup folders and install a single dependency:
+
+::
+
+    mkdir /backups/folder/stor
+    mkdir /backups/folder/work
+    yum install MySQL-python # apt-get install python-mysqldb
+    wget https://raw.githubusercontent.com/dotmanila/pyxbackup/master/pyxbackup
+    chmod 0755 pyxbackup
+
+Run you first backup!
+
+::
+
+    ./pyxbackup full
+
+See more `Configuration`_ options above.
+
 Compressed Backups
 ==================
 
