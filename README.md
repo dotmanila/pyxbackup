@@ -148,8 +148,6 @@ Quick Install
 
 First, create your local backup folders and install a single dependency:
 
-::
-
     mkdir /backups/folder/stor
     mkdir /backups/folder/work
     yum install MySQL-python # apt-get install python-mysqldb
@@ -157,8 +155,6 @@ First, create your local backup folders and install a single dependency:
     chmod 0755 pyxbackup
 
 Run you first backup!
-
-::
 
     ./pyxbackup full
 
