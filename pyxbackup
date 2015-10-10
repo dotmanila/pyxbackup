@@ -17,7 +17,6 @@ XB_BIN_NAME = 'pyxbackup'
 
 xb_opt_config = None
 xb_opt_config_section = None
-xb_opt_type = 'full'
 xb_opt_stor_dir = ''
 xb_opt_work_dir = ''
 xb_opt_mysql_user = None
@@ -368,7 +367,7 @@ def _write_backup_info():
 
 def _parse_raw_config(ckpnt_f):
     if not os.path.isfile(ckpnt_f):
-        _warn("Checkpoint file not found, ", ckpnt_f, "!")
+        _warn("Config file not found, ", ckpnt_f, "!")
         return False
 
     with open(ckpnt_f) as ckp:
@@ -378,6 +377,21 @@ def _parse_raw_config(ckpnt_f):
     cfp.add_section(XB_BIN_NAME)
 
     return cfp
+
+def _read_backup_metadata(bkp):
+    meta_path = os.path.join(bkp, XB_META_FILE)
+
+    # For backwards compatibility
+    if not os.path.isfile(meta_path):
+        meta_path = os.path.join(bkp, 'xbackup.meta')
+
+    meta = _parse_raw_config(meta_path)
+
+    if not meta:
+        _die("Unable to read backup meta information, ",
+            "%s corrupt?" % meta_path)
+
+    return meta
 
 def _apply_log(bkp, incrdir, final=False):
     if not os.path.isdir(bkp):
@@ -447,14 +461,7 @@ def _apply_log(bkp, incrdir, final=False):
 
 def _prepare_backup(bkp, prep):
     prepare_success = False
-
-    # Backward compatibility with 'xbackup.meta'
-    meta_file = XB_META_FILE
-    if not os.path.isfile(os.path.join(bkp, meta_file)):
-        meta_file = 'xbackup.meta'
-
-    meta_f = os.path.join(bkp, meta_file)
-    meta = _parse_raw_config(meta_f)
+    meta = _read_backup_metadata(bkp)
 
     if not meta:
         _die("Unable to read backup meta information, ",
@@ -497,8 +504,18 @@ def _prepare_backup(bkp, prep):
             _say("Applying log to %s" % prep)
             prepare_success = _apply_log(prep, prep)
         else:
+            # When backup is not compressed we need to preserve the 
+            # xtrabackup_logfile since preparing directly from the
+            # stor_dir will touch the logfile and we cannot use it
+            # again
+            # We do this to make the process faster instead of copying
+            # the whole incremental backup
+            _say("Preserving xtrabackup_logfile from %s" % bkp)
+            shutil.copy("%s/xtrabackup_logfile" % bkp, "%s/xtrabackup_logfile.101" % bkp)
             _say("Applying log on %s with %s" % (prep, bkp))
             prepare_success = _apply_log(bkp, prep)
+            os.remove("%s/xtrabackup_logfile" % bkp)
+            shutil.move("%s/xtrabackup_logfile.101" % bkp, "%s/xtrabackup_logfile" % bkp)
 
     return prepare_success
 
@@ -585,6 +602,8 @@ def _compress_qp(bkp, xbs):
 
         _exit_code(XB_EXIT_COMPRESS_FAIL)
         return False
+
+    os.chdir(cwd)
 
     return True
 
@@ -1136,13 +1155,9 @@ def _oldest_binlog_from_backup():
 
     # Backward compatibility with 'xbackup.meta'
     meta_file_dir = os.path.join(xb_stor_full, xb_full_list[-1:][0])
-    meta_file = XB_META_FILE
-    if not os.path.isfile(os.path.join(meta_file_dir, meta_file)):
-        meta_file = 'xbackup.meta'
+    meta = _read_backup_metadata(meta_file_dir)
 
     try:
-        meta_f = os.path.join(meta_file_dir, meta_file)
-        meta = _parse_raw_config(meta_f)
         old_binlog = meta.get(XB_BIN_NAME, field_name)
         _debug("Found binlog from oldest full backup, %s" % old_binlog)
 
@@ -1923,11 +1938,7 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
     elif backup_is == XB_CMD_INCR:
         # First let's work on the full backup for this incremental
         the_backup_path = os.path.join(xb_stor_incr, full_backup, the_backup)
-        bkp_meta = os.path.join(the_backup_path, XB_META_FILE)
-        bkp_info = _parse_raw_config(bkp_meta)
-
-        if not bkp_info:
-            _die("Unable to read backup meta information, %s" % bkp_meta)
+        bkp_info = _read_backup_metadata(the_backup_path)
 
         bkp_full = bkp_info.get(XB_BIN_NAME, 'full')
         current_bkp = os.path.join(xb_stor_full, bkp_full)
@@ -2333,12 +2344,6 @@ def init():
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
     global xb_opt_purge_bitmaps
-
-    # http://stackoverflow.com/questions/1857346/\
-    # python-optparse-how-to-include-additional-info-in-usage-output
-    class PyxOptParser(OptionParser):
-        def format_epilog(self, formatter):
-            return self.epilog
 
     xb_opt_config = "/etc/%s.cnf" % XB_BIN_NAME
 
@@ -2931,6 +2936,12 @@ def list_binlogs():
         xb_first_binlog = xb_binlogs_list[0]
         xb_last_binlog = xb_binlogs_list[len(xb_binlogs_list)-1]
 
+# http://stackoverflow.com/questions/1857346/\
+# python-optparse-how-to-include-additional-info-in-usage-output
+class PyxOptParser(OptionParser):
+    def format_epilog(self, formatter):
+        return self.epilog
+
 try:
     signal.signal(signal.SIGTERM, _sigterm_handler)
     xb_curdate = date(time.time(), '%Y_%m_%d-%H_%M_%S')
@@ -3014,4 +3025,3 @@ except Exception, e:
         traceback.print_exc()
 
     sys.exit(255)
-
