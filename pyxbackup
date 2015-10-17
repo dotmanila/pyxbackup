@@ -459,7 +459,7 @@ def _apply_log(bkp, incrdir, final=False):
 
     return False
 
-def _prepare_backup(bkp, prep):
+def _prepare_backup(bkp, prep, final=False):
     prepare_success = False
     meta = _read_backup_metadata(bkp)
 
@@ -492,17 +492,17 @@ def _prepare_backup(bkp, prep):
 
         if is_of_type == XB_CMD_FULL:
             _say("Applying log on %s" % prep)
-            prepare_success = _apply_log(prep, prep)
+            prepare_success = _apply_log(prep, prep, final)
         else:
             _say("Applying log on %s with %s" % (prep, prep_tmp))
-            prepare_success = _apply_log(prep_tmp, prep)
+            prepare_success = _apply_log(prep_tmp, prep, final)
             shutil.rmtree(prep_tmp)
     else:
         if is_of_type == XB_CMD_FULL:
             _say("Copying %s to %s" % (bkp, prep))
             shutil.copytree(bkp, prep)
             _say("Applying log to %s" % prep)
-            prepare_success = _apply_log(prep, prep)
+            prepare_success = _apply_log(prep, prep, final)
         else:
             # When backup is not compressed we need to preserve the 
             # xtrabackup_logfile since preparing directly from the
@@ -513,7 +513,7 @@ def _prepare_backup(bkp, prep):
             _say("Preserving xtrabackup_logfile from %s" % bkp)
             shutil.copy("%s/xtrabackup_logfile" % bkp, "%s/xtrabackup_logfile.101" % bkp)
             _say("Applying log on %s with %s" % (prep, bkp))
-            prepare_success = _apply_log(bkp, prep)
+            prepare_success = _apply_log(bkp, prep, final)
             os.remove("%s/xtrabackup_logfile" % bkp)
             shutil.move("%s/xtrabackup_logfile.101" % bkp, "%s/xtrabackup_logfile" % bkp)
 
@@ -900,6 +900,7 @@ def _extract_qp_file(file):
 def _extract_ibx_decompress(dest):
     # Now we decompress *.qp files
     ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
+    FNULL = None
 
     if not xb_opt_debug:
         FNULL = open(os.devnull, 'w')
@@ -1932,7 +1933,7 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
 
     if backup_is == XB_CMD_FULL:
         the_backup_path = os.path.join(xb_stor_full, the_backup)
-        if not _prepare_backup(the_backup_path, prepare_path):
+        if not _prepare_backup(the_backup_path, prepare_path, finalize):
             _die("There was a problem preparing full backup %s" % the_backup_path)
 
     elif backup_is == XB_CMD_INCR:
@@ -1951,17 +1952,18 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
 
         for current_bkp in current_incr_list:
             current_bkp_path = os.path.join(xb_stor_incr, bkp_full, current_bkp)
-            if not _prepare_backup(current_bkp_path, prepare_path):
+
+            if current_bkp == the_backup and finalize: 
+                prepare_success = _prepare_backup(current_bkp_path, prepare_path, finalize)
+            else:
+                prepare_success = _prepare_backup(current_bkp_path, prepare_path)
+            
+            if not prepare_success:
                 _die("There was a problem applying incremental backup ",
                     "%s to %s" % (current_bkp_path, prepare_path))
 
             if current_bkp == the_backup:
                 break
-
-    if finalize:
-        _say("Finalizing backup %s" % prepare_path)
-        if not _apply_log(prepare_path, prepare_path, True):
-            _die("Failed to finalize prepare of %s" % prepare_path)
 
     _say("Prepare of backup %s successfully completed" % the_backup)
 
