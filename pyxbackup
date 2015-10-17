@@ -2444,8 +2444,7 @@ Valid commands are:
     parser.add_option('-x', '--apply-log', dest='apply_log', action="store_true",
         help='Verify backups with --apply-log, requires enough disk space on --workdir')
     parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
-        help='How much memory to use with innobackupex --use-memory in MB, default 128M',
-        default=128)
+        help='How much memory to use with innobackupex --use-memory in MB, default 128M')
     parser.add_option('-o', '--status-format', dest='status_format', type="string",
         help=('For status command, what output format, default=none, '
             'possible values: none, nagios, zabbix (cli)'))
@@ -2592,7 +2591,7 @@ Valid commands are:
             xb_opt_apply_log = bool(int(xb_cfg.get(xb_opt_config_section, 'apply_log')))
 
         if xb_cfg.has_option(xb_opt_config_section, 'prepare_memory'):
-            xb_opt_prepare_memory = xb_cfg.get(xb_opt_config_section, 'prepare_memory')
+            xb_opt_prepare_memory = int(xb_cfg.get(xb_opt_config_section, 'prepare_memory'))
 
         if xb_cfg.has_option(xb_opt_config_section, 'retention_sets'):
             if int(xb_cfg.get(xb_opt_config_section, 'retention_sets')) > 0:
@@ -3025,3 +3024,480 @@ except Exception, e:
         traceback.print_exc()
 
     sys.exit(255)
+
+
+class PyxOptions(object):
+    config = None
+    config_section = None
+    stor_dir = ''
+    work_dir = ''
+    mysql_user = None
+    mysql_pass = None
+    mysql_host = 'localhost'
+    mysql_port = 3306
+    mysql_sock = '/tmp/mysql.sock'
+    mysql_cnf = None
+    retention_binlogs = False
+    compress = False
+    compress_with = 'gzip'
+    apply_log = False
+    prepare_memory = 128
+    retention_sets = 2
+    retention_months = 0
+    retention_weeks = 0
+    debug = False
+    quiet = False
+    status_format = None
+    command = 'status'
+    restore_backup = None
+    restore_dir = None
+    remote_stor_dir = None
+    remote_host = None
+    remote_push_only = None
+    remote_script = XB_BIN_NAME
+    remote_nc_port = 0
+    remote_nc_port_min = 0
+    remote_nc_port_max = 0
+    ssh_opts = ''
+    ssh_user = None
+    notify_by_email = None
+    notify_on_success = None
+    meta_item = None
+    wipeout = False
+    first_binlog = False
+    binlog_binary = None
+    binlog_from_master = False
+    encrypt = False
+    encrypt_key_file = None
+    extra_ibx_options = None
+    purge_bitmaps = None
+    
+    def __init__(self):
+
+        _init_log_file("/tmp/%s-%s" % (xb_curdate, XB_LOG_NAME))
+
+        p_usage = "Usage: %prog [options] COMMAND"
+        p_desc = "Managed xtrabackup based backups."
+        p_epilog = ["\n"
+            "Options here can also be specified on a filed called %s.cnf \n"
+            "which will be checked in this order: \n\n"
+            "- on a file specified via the --config option\n"
+            "- /etc/pyxbackup.cnf\n"
+            "- on the same directory of the script \n\n"
+            "Valid commands are:\n\n"
+            "\tfull: Execute full backups\n"
+            "\tincr: Execute incremental backups\n"
+            "\tlist: List existing backups and additional information\n"
+            "\tstatus: Check status of last backup\n"
+            "\tapply-last: Prepare to the most recent backup\n"
+            "\trestore-set: Restore to a specific backup set\n"
+            "\tlast-lsn: Print out to_lsn value of last backup for incremental use\n"
+            "\twipeout: Cleanup all existing backups\n"]
+        p_epilog = p_epilog % XB_BIN_NAME
+
+        parser = PyxOptParser(p_usage, version="%prog " + str(xb_version),
+            description=p_desc, epilog=p_epilog)
+        parser.add_option('-f', '--config', dest='config', type='string',
+            help='Path to config file to use, useful for multiple back locations')
+        parser.add_option('', '--config-section', dest='config_section', type='string',
+            help=('By default, config options are read from the %s section. '
+                'If you have multiple sections/profile in the configuration file '
+                'you can specify the section name, similar to mysql --defaults-group. '
+                '(cli)')  % XB_BIN_NAME)
+        parser.add_option('-u', '--mysql-user', dest='mysql_user', type='string',
+            help='MySQL server username')
+        parser.add_option('-p', '--mysql-pass', dest='mysql_pass', type='string',
+            help='MySQL server password')
+        parser.add_option('-H', '--mysql-host', dest='mysql_host', type='string',
+            help='MySQL server hostname/IP address')
+        parser.add_option('-P', '--mysql-port', dest='mysql_port', type='int',
+            help='MySQL server port, socket has precendence')
+        parser.add_option('-S', '--mysql-socket', dest='mysql_sock', type='string',
+            help='MySQL server path to socket file')
+        parser.add_option('-c', '--mysql-cnf', dest='mysql_cnf', type='string',
+            help=('Path to custom my.cnf, in case you want to pass this value to '
+                'innobackupex --defaults-file'))
+        parser.add_option('-s', '--stor-dir', dest='stor_dir', type='string',
+            help='Path to directory where backups are stored.')
+        parser.add_option('-w', '--work-dir', dest='work_dir', type='string',
+            help='Path to temporary backup work directory')
+        parser.add_option('-b', '--retention-binlogs', dest='retention_binlogs', type="int",
+            help='Binary log period retention, in days')
+        parser.add_option('', '--extra-ibx-options', dest='extra_ibx_options', type='string',
+            help=('Specify additional innobackupex options, make sure to '
+                'mind your quotes and avoid conflicts with --encrypt*, '
+                '--compress, --remote-host - will think of better way to '
+                'handle this in the future!'))
+        parser.add_option('-z', '--compress', dest='compress',  action="store_true",
+            help='Compress backups, by default with gzip, see -Z')
+        parser.add_option('-Z', '--compress-with', dest='compress_with',
+            help='Compress backup with binary, default gzip, options (gzip, qpress)')
+        parser.add_option('-M', '--notify-by-email', dest='notify_by_email',
+            help='Send failed backup notifications to this address(es)')
+        parser.add_option('', '--notify-on-success', dest='notify_on_success',
+            help='Send success backup notifications to this address(es)')
+        parser.add_option('-R', '--remote-stor-dir', dest='remote_stor_dir',
+            help=('When --remote-host is not empty, backups to that host will be '
+                'streamed to this directory, similar to --stor-dir'))
+        parser.add_option('-T', '--remote-host', dest='remote_host',
+            help='Stream backups to this remote host')
+        parser.add_option('-L', '--remote-push-only', dest='remote_push_only', action="store_true",
+            help=('Instructs xtrabackup that all backups will be pushed to '
+                'remote only, no local post processing'))
+        parser.add_option('-B', '--remote-script', dest='remote_script',
+            help=('When --remote-push-only is enabled, we need to specify the '
+                'path to this script on the remote server, default is xbackup.py'))
+        parser.add_option('', '--remote-nc-port', dest='remote_nc_port',
+            help=('When requesting to open a netcat port, this is the port number '
+                'to try with, can be a range separated with comma'))
+        parser.add_option('-C', '--ssh-opts', dest='ssh_opts',
+            help=('SSH options when streaming backups to remote host '
+                'i.e. -i /path/to/identity file'))
+        parser.add_option('-U', '--ssh-user', dest='ssh_user',
+            help='SSH account to user when streaming backups to remote host, default is root')
+        parser.add_option('-x', '--apply-log', dest='apply_log', action="store_true",
+            help='Verify backups with --apply-log, requires enough disk space on --workdir')
+        parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
+            help='How much memory to use with innobackupex --use-memory in MB, default 128M')
+        parser.add_option('-o', '--status-format', dest='status_format', type="string",
+            help=('For status command, what output format, default=none, '
+                'possible values: none, nagios, zabbix (cli)'))
+        parser.add_option('-r', '--restore-backup', dest='restore_backup', type="string",
+            help=('With command restore-set, specify which backup to restore, '
+                'choose any from output of list command. Default is restore to last '
+                'successful backup. (cli)'))
+        parser.add_option('-e', '--restore-dir', dest='restore_dir', type="string",
+            help='With command restore, specify where to restore selected backup (cli)')
+        parser.add_option('-i', '--retention-sets', dest='retention_sets',
+            help='How many sets of combined full + incr to keep on storage, default 2')
+        parser.add_option('-j', '--retention-months', dest='retention_months', type="int",
+            help='How many rotated monthly backups to keep, default 0',
+            default=0)
+        parser.add_option('-k', '--retention-weeks', dest='retention_weeks', type="int",
+            help='How many rotated weekly backups to keep, default 0',
+            default=0)
+        parser.add_option('-t', '--meta-item', dest='meta_item', type="string",
+            help=('Query meta information about backups, used when backups '
+                'are push to remote location. Allows the script to query information '
+                'about backups stored remotely'))
+        parser.add_option('-n', '--first-binlog', dest='first_binlog', type="string",
+            help=('For binlog-stream, if the script cannot determine the oldest '
+                'binary log filename from the backups to maintain the list of files '
+                'to keep, we can specify it manually here'))
+        parser.add_option('', '--binlog-from-master', dest='binlog_from_master', action="store_true",
+            help=('For binlog-stream, when --slave-info is enabled on the backups '
+                'and you want to stream binary logs from the master instead '
+                'this tells the script to determine the correct binary log file name'))
+        parser.add_option('-l', '--binlog-binary', dest='binlog_binary', type="string",
+            help=('For binlog-stream, specify where the 5.6+ mysqlbinlog utility '
+                'is located'))
+        parser.add_option('-d', '--debug', dest='debug', action="store_true",
+            help='Enable debugging, more verbose output (cli)',
+            default=False)
+        parser.add_option('-q', '--quiet', dest='quiet', action="store_true",
+            help='Supress all messages errors except intended output i.e. list command (cli)',
+            default=False)
+        parser.add_option('-X', '--i-am-absolutely-sure-wipeout', dest='wipeout', action="store_true",
+            help='Confirm to **WIPEOUT** all backups with wipeout command! (cli)',
+            default=False)
+        parser.add_option('', '--encrypt', dest='encrypt', type="string",
+            help='Whether to encrypt backups on storage')
+        parser.add_option('', '--encrypt-key-file', dest='encrypt_key_file', type="string",
+            help=('Key file for encrypting/decrypting backups'))
+        parser.add_option('', '--purge-bitmaps', dest='purge_bitmaps',  action="store_true",
+            help=('If Changed Page Tracking is enabled, should we automatically '
+                'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
+                'with SUPER privieleges is specified.'))
+
+        (options, args) = parser.parse_args()
+
+        if options.debug: debug = True
+        if options.quiet: quiet = True
+        if options.wipeout: wipeout = True
+
+        if quiet and debug:
+            _die("--debug and --quiet are mutually exclusive")
+
+        config = "/etc/%s.cnf" % XB_BIN_NAME
+        if not os.path.isfile(config):
+            config = "%s/%s.cnf" % (xb_cwd, XB_BIN_NAME)
+        config_section = XB_BIN_NAME
+
+        if options.config:
+            config = os.path.realpath(options.config)
+            if not os.path.isfile(config):
+                _die("The specified configuration file %s " % options.config,
+                    "does not exist or is not readable!")
+            else:
+                _say("Using config file %s" % config)
+
+        if options.config_section: config_section = options.config_section
+        cfg = self.read_config_file(config, config_section)
+
+        if options.mysql_user: mysql_user = options.mysql_user
+        if options.mysql_pass: mysql_pass = options.mysql_pass
+        if options.mysql_host: mysql_host = options.mysql_host
+        if options.mysql_port: mysql_port = options.mysql_port
+        if options.mysql_sock: mysql_sock = options.mysql_sock
+        if options.mysql_cnf: mysql_cnf = options.mysql_cnf
+        if options.stor_dir: stor_dir = options.stor_dir.rstrip('/')
+        if options.work_dir: work_dir = options.work_dir.rstrip('/')
+        if options.retention_binlogs: retention_binlogs = options.retention_binlogs
+        if options.compress: compress = options.compress
+        if options.compress_with: compress_with = options.compress_with
+        if options.notify_by_email: notify_by_email = options.notify_by_email
+        if options.notify_on_success: notify_on_success = options.notify_on_success
+        if options.first_binlog: first_binlog = options.first_binlog
+        if options.binlog_binary: binlog_binary = options.binlog_binary
+        if options.binlog_from_master: binlog_from_master = options.binlog_from_master
+
+        if options.remote_stor_dir: remote_stor_dir = options.remote_stor_dir
+        if options.remote_host: remote_host = options.remote_host
+        if options.remote_script: remote_script = options.remote_script
+        if options.remote_push_only is not None:
+            remote_push_only = options.remote_push_only
+        
+        if options.remote_nc_port is not None and \
+                not _parse_port_param(options.remote_nc_port):
+            parser.error("The specified port (range) is not valid")
+        else:
+            remote_nc_port = options.remote_nc_port
+
+        if options.ssh_opts: ssh_opts = options.ssh_opts
+        if options.ssh_user: ssh_user = options.ssh_user
+        if options.meta_item: meta_item = options.meta_item
+
+        if remote_host is not None and remote_stor_dir is None:
+            parser.error("Remote host specified but, remote store directory is empty")
+
+        if options.apply_log: apply_log = options.apply_log
+        if options.prepare_memory: prepare_memory = options.prepare_memory
+        if options.status_format: status_format = options.status_format
+        if options.restore_backup is not None:
+            restore_backup = options.restore_backup
+        if options.restore_dir is not None:
+            restore_dir = options.restore_dir
+        if options.retention_sets and int(options.retention_sets) > 0:
+            retention_sets = int(options.retention_sets)
+        if options.retention_months > 0:
+            retention_months = int(options.retention_months)
+        if options.retention_weeks > 0:
+            retention_weeks = int(options.retention_weeks)
+
+        if options.encrypt: encrypt = options.encrypt
+        if options.encrypt_key_file: encrypt_key_file = options.encrypt_key_file
+        if options.extra_ibx_options: extra_ibx_options = options.extra_ibx_options
+        if options.purge_bitmaps: purge_bitmaps = options.purge_bitmaps
+
+        if cfg: _debug('Found config file: ', config)
+
+        cmds = [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_LIST, XB_CMD_STAT, 
+                XB_CMD_PREP, XB_CMD_APPL, XB_CMD_PRUNE, XB_CMD_META, 
+                XB_CMD_BINLOGS, XB_CMD_WIPE]
+        if len(args) >= 1 and args[0] not in cmds:
+            parser.error("Command not recognized, got '%s'. See more with --help" % args[0])
+        elif len(args) <= 0:
+            parser.error("Command not specified. See more with --help")
+        else:
+            command = args[0]
+
+        if remote_push_only and apply_log:
+            _die("--remote-push-only and --apply-log are mutually exclusive")
+
+        if options.retention_sets is not None and options.retention_sets <= 0:
+            _die("Invalid value for retention sets, ",
+                "you should keep one or more backup sets!")
+
+        if encrypt and not os.path.isfile(encrypt_key_file):
+            _die("The specified key file does not exist!")
+
+        if encrypt and compress and compress_with == 'gzip':
+            _die("GZIP compression + encryption is not supported ",
+                "at the moment. Please use --compress-with=qpress instead.")
+
+        if encrypt and not compress:
+            _die("Encryption requires compression for now, support for ",
+                "uncompressed encrypted backup will be added in the future")
+
+        if command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
+            _check_binary('innobackupex')
+            _check_binary('xtrabackup')
+
+        if remote_nc_port_min:
+            _check_binary('nc')
+            _check_binary('netstat')
+
+        # store xtrabackup version numbers
+        _xb_version()
+
+        # we test email delivery beforehand to make sure it works
+        # this will happen only once as long as the sentinel file exists
+        # i.e. STOR_DIR/pyxbackup_mail_ok
+        mail_status_file = "%s/%s_mail_ok" % (stor_dir, XB_BIN_NAME)
+        if (notify_by_email or notify_on_success) and \
+                not os.path.isfile(mail_status_file):
+            mail_message = "This is a test message from %s@%s, please ignore." % (
+                xb_user, xb_hostname)
+            mail_subject = "pyxbackup Test Mail"
+            mail_to = notify_by_email \
+                if notify_by_email else notify_on_success
+
+            _say("Mail has not been tested, sending initial test mail.")
+
+            if _notify_by_email(mail_subject, mail_message, mail_to):
+                open(mail_status_file, 'a').close()
+
+        if debug:
+            _debug("Supplied options:")
+            for x, v in options.__dict__.items():
+                _debug(("\t%s: %s" % (x, globals()['' + str(x)])))
+            _debug("\tcommand: %s" % command)
+
+
+    def read_config_file(cfg_file, config_section):
+        cfg = ConfigParser()
+        cfg.read(config)
+
+        if cfg.has_option(config_section, 'mysql_host'):
+            mysql_host = cfg.get(config_section, 'mysql_host')
+
+        if cfg.has_option(config_section, 'mysql_user'):
+            mysql_user = cfg.get(config_section, 'mysql_user')
+
+        if cfg.has_option(config_section, 'mysql_pass'):
+            mysql_pass = cfg.get(config_section, 'mysql_pass')
+
+        if cfg.has_option(config_section, 'mysql_port'):
+            mysql_port = int(cfg.get(config_section, 'mysql_port'))
+
+        if cfg.has_option(config_section, 'mysql_sock'):
+            mysql_sock = cfg.get(config_section, 'mysql_sock')
+
+        if cfg.has_option(config_section, 'mysql_cnf'):
+            mysql_cnf = cfg.get(config_section, 'mysql_cnf')
+
+        if cfg.has_option(config_section, 'stor_dir'):
+            stor_dir = cfg.get(config_section, 'stor_dir').rstrip('/')
+
+        if cfg.has_option(config_section, 'work_dir'):
+            work_dir = cfg.get(config_section, 'work_dir').rstrip('/')
+
+        if cfg.has_option(config_section, 'ssh_opts'):
+            ssh_opts = cfg.get(config_section, 'ssh_opts')
+
+        if cfg.has_option(config_section, 'ssh_user'):
+            ssh_user = cfg.get(config_section, 'ssh_user')
+
+        if cfg.has_option(config_section, 'remote_stor_dir'):
+            remote_stor_dir = cfg.get(config_section, 'remote_stor_dir').rstrip('/')
+
+        if cfg.has_option(config_section, 'remote_host'):
+            remote_host = cfg.get(config_section, 'remote_host')
+
+        if cfg.has_option(config_section, 'remote_script'):
+            remote_script = cfg.get(config_section, 'remote_script')
+
+        if cfg.has_option(config_section, 'remote_push_only'):
+            remote_push_only = bool(int(cfg.get(config_section, 'remote_push_only')))
+
+        if cfg.has_option(config_section, 'remote_nc_port'):
+            if not self.parse_port(cfg.get(config_section, 'remote_nc_port')):
+                _die("The specified port (range) is not valid")
+            else:
+                remote_nc_port = cfg.get(config_section, 'remote_nc_port')
+
+        if cfg.has_option(config_section, 'retention_binlogs'):
+            retention_binlogs = int(cfg.get(config_section, 'retention_binlogs'))
+
+        if cfg.has_option(config_section, 'binlog_binary'):
+            binlog_binary = cfg.get(config_section, 'binlog_binary')
+
+        if cfg.has_option(config_section, 'binlog_from_master'):
+            binlog_from_master = cfg.get(config_section, 'binlog_from_master')
+
+        if cfg.has_option(config_section, 'compress'):
+            compress = bool(int(cfg.get(config_section, 'compress')))
+
+        if cfg.has_option(config_section, 'compress_with'):
+            compress_with = cfg.get(config_section, 'compress_with')
+
+        if cfg.has_option(config_section, 'notify_by_email'):
+            notify_by_email = cfg.get(config_section, 'notify_by_email')
+
+        if cfg.has_option(config_section, 'notify_on_success'):
+            notify_on_success = cfg.get(config_section, 'notify_on_success')
+
+        if cfg.has_option(config_section, 'apply_log'):
+            apply_log = bool(int(cfg.get(config_section, 'apply_log')))
+
+        if cfg.has_option(config_section, 'prepare_memory'):
+            prepare_memory = int(cfg.get(config_section, 'prepare_memory'))
+
+        if cfg.has_option(config_section, 'retention_sets'):
+            if int(cfg.get(config_section, 'retention_sets')) > 0:
+                retention_sets = int(cfg.get(config_section, 'retention_sets'))
+
+        if cfg.has_option(config_section, 'retention_months'):
+            if int(cfg.get(config_section, 'retention_months')) > 0:
+                retention_months = int(cfg.get(config_section, 'retention_months'))
+
+        if cfg.has_option(config_section, 'retention_weeks'):
+            if int(cfg.get(config_section, 'retention_weeks')) > 0:
+                retention_weeks = int(cfg.get(config_section, 'retention_weeks'))
+
+        if cfg.has_option(config_section, 'encrypt_key_file'):
+            encrypt_key_file = cfg.get(config_section, 'encrypt_key_file')
+
+        if cfg.has_option(config_section, 'encrypt'):
+            encrypt = cfg.get(config_section, 'encrypt')
+
+        if cfg.has_option(config_section, 'extra_ibx_options'):
+            extra_ibx_options = cfg.get(config_section, 'extra_ibx_options')
+
+        if cfg.has_option(config_section, 'purge_bitmaps'):
+            purge_bitmaps = cfg.get(config_section, 'purge_bitmaps')
+
+        return cfg
+
+    def parse_port(param):
+        """
+        Parses and assign given port range values 
+        i.e.
+        remote_nc_port = 9999
+        remote_nc_port = 9999,1000
+        """
+
+        if not param: return False
+        if param.isdigit():
+            self.remote_nc_port_min = int(param)
+            self.remote_nc_port_max = self.remote_nc_port_min
+            return True
+        elif param.count(',') == 1:
+            pmin, pmax = param.split(',')
+            pmin = pmin.strip()
+            pmax = pmax.strip()
+            if not pmin.isdigit() or not pmax.isdigit(): return False
+            self.remote_nc_port_min = int(pmin)
+            self.remote_nc_port_max = int(pmax)
+            if self.remote_nc_port_min > self.remote_nc_port_max:
+                pmin = self.remote_nc_port_max
+                self.remote_nc_port_max = self.remote_nc_port_min
+                self.remote_nc_port_min = pmin
+            return True
+
+        return False
+
+class PyxMail(object):
+    pass
+
+class PyxLogger(object):
+    pass
+
+class PyxStorage(object):
+    pass
+
+class PyxBinlogs(object):
+    pass
+
+class PyxBackup(object):
+    pass
