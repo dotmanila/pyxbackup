@@ -1933,7 +1933,13 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
 
     if backup_is == XB_CMD_FULL:
         the_backup_path = os.path.join(xb_stor_full, the_backup)
-        if not _prepare_backup(the_backup_path, prepare_path, finalize):
+        
+        if finalize: 
+            prepare_success = _prepare_backup(the_backup_path, prepare_path, finalize)
+        else:
+            prepare_success = _prepare_backup(the_backup_path, prepare_path)
+
+        if not prepare_success:
             _die("There was a problem preparing full backup %s" % the_backup_path)
 
     elif backup_is == XB_CMD_INCR:
