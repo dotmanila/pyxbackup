@@ -2784,6 +2784,7 @@ def list_backups():
 
     l = os.listdir(xb_stor_full)
     if len(l) <= 0 and xb_opt_command == XB_CMD_INCR and not xb_opt_remote_push_only:
+        _exit_code(XB_EXIT_NO_FULL)
         _die("There is no available full backup for incremental from ",
             xb_stor_full)
 
