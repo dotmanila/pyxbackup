@@ -121,6 +121,7 @@ XB_CMD_BINLOGS = 'binlog-stream'
 XB_CMD_WIPE = 'wipeout'
 XB_TAG_FILE = 'xtrabackup_checkpoints'
 XB_CKP_FILE = 'xtrabackup_checkpoints'
+XB_LOG_FILE = 'xtrabackup_logfile'
 XB_LCK_FILE = ''
 XB_META_FILE = 'backup.meta'
 XB_BKP_LOG = 'innobackupex-backup.log'
@@ -286,6 +287,25 @@ def _create_lock_file():
         lck.write("pid = %s\n" % str(os.getpid()))
 
         lck.close()
+
+def _xb_logfile_copy(bkp):
+    # When backup is not compressed we need to preserve the 
+    # xtrabackup_logfile since preparing directly from the
+    # stor_dir will touch the logfile and we cannot use it
+    # again
+    # We do this to make the process faster instead of copying
+    # the whole incremental backup
+    _say("Preserving %s from %s" % (XB_LOG_FILE, bkp))
+    xb_from = "%s/%s" % (bkp, XB_LOG_FILE)
+    xb_to = "%s/%s.101" % (bkp, XB_LOG_FILE)
+    shutil.copy(xb_from, xb_to)
+
+def _xb_logfile_restore(bkp):
+    _say("Restoring %s from %s" % (XB_LOG_FILE, bkp))
+    xb_from = "%s/%s.101" % (bkp, XB_LOG_FILE)
+    xb_to = "%s/%s" % (bkp, XB_LOG_FILE)
+    if os.path.isfile(xb_to): os.remove(xb_to)
+    shutil.move(xb_from, xb_to)
 
 def _sigterm_handler(signal, frame):
     global XB_SIGTERM_CAUGHT
@@ -504,18 +524,10 @@ def _prepare_backup(bkp, prep, final=False):
             _say("Applying log to %s" % prep)
             prepare_success = _apply_log(prep, prep, final)
         else:
-            # When backup is not compressed we need to preserve the 
-            # xtrabackup_logfile since preparing directly from the
-            # stor_dir will touch the logfile and we cannot use it
-            # again
-            # We do this to make the process faster instead of copying
-            # the whole incremental backup
-            _say("Preserving xtrabackup_logfile from %s" % bkp)
-            shutil.copy("%s/xtrabackup_logfile" % bkp, "%s/xtrabackup_logfile.101" % bkp)
+            _xb_logfile_copy(bkp)
             _say("Applying log on %s with %s" % (prep, bkp))
             prepare_success = _apply_log(bkp, prep, final)
-            os.remove("%s/xtrabackup_logfile" % bkp)
-            shutil.move("%s/xtrabackup_logfile.101" % bkp, "%s/xtrabackup_logfile" % bkp)
+            _xb_logfile_restore(bkp)
 
     return prepare_success
 
@@ -1618,7 +1630,9 @@ def run_xb():
             shutil.copytree(xb_this_backup, t)
             xb_prepare_is_success = _apply_log(t, xb_this_backup)
         else:
+            _xb_logfile_copy(xb_this_backup)
             xb_prepare_is_success = _apply_log(xb_this_backup, xb_prepared_backup)
+            _xb_logfile_restore(xb_this_backup)
 
         xb_info_prep_end = date(time.time(), '%Y_%m_%d-%H_%M_%S')
 
@@ -2949,90 +2963,89 @@ class PyxOptParser(OptionParser):
     def format_epilog(self, formatter):
         return self.epilog
 
-try:
-    signal.signal(signal.SIGTERM, _sigterm_handler)
-    xb_curdate = date(time.time(), '%Y_%m_%d-%H_%M_%S')
-    xb_cwd = os.path.dirname(os.path.realpath(__file__))
-    xb_hostname = os.uname()[1]
-    xb_user = pwd.getpwuid(os.getuid())[0]
+if __name__ == "__main__":
+    try:
+        signal.signal(signal.SIGTERM, _sigterm_handler)
+        xb_curdate = date(time.time(), '%Y_%m_%d-%H_%M_%S')
+        xb_cwd = os.path.dirname(os.path.realpath(__file__))
+        xb_hostname = os.uname()[1]
+        xb_user = pwd.getpwuid(os.getuid())[0]
 
-    dt = datetime.strptime(xb_curdate, '%Y_%m_%d-%H_%M_%S')
-    if dt.weekday() == 6:
-        xb_is_last_day_of_week = True
+        dt = datetime.strptime(xb_curdate, '%Y_%m_%d-%H_%M_%S')
+        if dt.weekday() == 6:
+            xb_is_last_day_of_week = True
 
-    if calendar.monthrange(dt.year, dt.month)[1] == dt.day:
-        xb_is_last_day_of_month = True
+        if calendar.monthrange(dt.year, dt.month)[1] == dt.day:
+            xb_is_last_day_of_month = True
 
-    init()
-    check_dirs()
-    if xb_opt_command not in cmd_no_log:
-        # Initially our log file is created in /tmp/ until we can validate and
-        # make sure we can write to xb_opt_work_dir
-        _init_log_file("%s/%s-%s" % (xb_opt_work_dir, xb_curdate, XB_LOG_NAME))
+        init()
+        check_dirs()
+        if xb_opt_command not in cmd_no_log:
+            # Initially our log file is created in /tmp/ until we can validate and
+            # make sure we can write to xb_opt_work_dir
+            _init_log_file("%s/%s-%s" % (xb_opt_work_dir, xb_curdate, XB_LOG_NAME))
 
-    list_backups()
-    os.chdir(xb_opt_work_dir)
+        list_backups()
+        os.chdir(xb_opt_work_dir)
 
-    XB_LCK_FILE = os.path.join(xb_opt_work_dir, "%s.lock" % XB_BIN_NAME)
-    if not _check_in_progress():
-        _create_lock_file()
+        XB_LCK_FILE = os.path.join(xb_opt_work_dir, "%s.lock" % XB_BIN_NAME)
+        if not _check_in_progress():
+            _create_lock_file()
 
-    if xb_opt_command == XB_CMD_FULL:
-        run_xb_full()
-    elif xb_opt_command == XB_CMD_INCR:
-        run_xb_incr()
-    elif xb_opt_command == XB_CMD_LIST:
-        run_xb_list()
-    elif xb_opt_command == XB_CMD_PREP:
-        run_xb_restore_set()
-    elif xb_opt_command == XB_CMD_APPL:
-        run_xb_apply_last()
-    elif xb_opt_command == XB_CMD_PRUNE:
-        prune_full_incr()
-        prune_weekly()
-        prune_monthly()
-    elif xb_opt_command == XB_CMD_META:
-        run_meta_query()
-    elif xb_opt_command == XB_CMD_BINLOGS:
-        run_binlog_stream()
-    elif xb_opt_command == XB_CMD_WIPE:
-        run_wipeout()
-    else: run_status()
+        if xb_opt_command == XB_CMD_FULL:
+            run_xb_full()
+        elif xb_opt_command == XB_CMD_INCR:
+            run_xb_incr()
+        elif xb_opt_command == XB_CMD_LIST:
+            run_xb_list()
+        elif xb_opt_command == XB_CMD_PREP:
+            run_xb_restore_set()
+        elif xb_opt_command == XB_CMD_APPL:
+            run_xb_apply_last()
+        elif xb_opt_command == XB_CMD_PRUNE:
+            prune_full_incr()
+            prune_weekly()
+            prune_monthly()
+        elif xb_opt_command == XB_CMD_META:
+            run_meta_query()
+        elif xb_opt_command == XB_CMD_BINLOGS:
+            run_binlog_stream()
+        elif xb_opt_command == XB_CMD_WIPE:
+            run_wipeout()
+        else: run_status()
 
-    _destroy_lock_file()
+        _destroy_lock_file()
 
-    if os.path.isfile(xb_log_file):
-        if xb_opt_remote_host and xb_opt_command not in [XB_CMD_PREP, XB_CMD_APPL]:
-            _push_to_remote_scp(xb_log_file, "%s/" % xb_this_backup_remote.rstrip('/'))
-        _init_log_file(xb_log_file, True)
+        if os.path.isfile(xb_log_file):
+            if xb_opt_remote_host and xb_opt_command not in [XB_CMD_PREP, XB_CMD_APPL]:
+                _push_to_remote_scp(xb_log_file, "%s/" % xb_this_backup_remote.rstrip('/'))
+            _init_log_file(xb_log_file, True)
 
-    if xb_log_fd is not None:
-        os.close(xb_log_fd)
+        if xb_log_fd is not None:
+            os.close(xb_log_fd)
 
-    if xb_exit_code > 0 and xb_opt_notify_by_email:
-        _notify_by_email("MySQL backup script at %s has errors!" % xb_hostname)
-    elif xb_opt_notify_on_success and xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR]:
-        _notify_by_email(
-            "MySQL backup script at %s completed successfully!" % xb_hostname,
-            xb_backup_summary, xb_opt_notify_on_success)
+        if xb_exit_code > 0 and xb_opt_notify_by_email:
+            _notify_by_email("MySQL backup script at %s has errors!" % xb_hostname)
+        elif xb_opt_notify_on_success and xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR]:
+            _notify_by_email(
+                "MySQL backup script at %s completed successfully!" % xb_hostname,
+                xb_backup_summary, xb_opt_notify_on_success)
 
-    sys.exit(xb_exit_code)
-
-except Exception, e:
-    if xb_opt_notify_by_email:
-        _notify_by_email(
-            "MySQL backup script at %s exception!" % xb_hostname,
-            traceback.format_exc())
-
-    if xb_exit_code > 0:
         sys.exit(xb_exit_code)
-        if xb_opt_debug: traceback.print_exc()
-    else:
-        _error("An uncaught exception error has occurred!")
-        traceback.print_exc()
+    except Exception, e:
+        if xb_opt_notify_by_email:
+            _notify_by_email(
+                "MySQL backup script at %s exception!" % xb_hostname,
+                traceback.format_exc())
 
-    sys.exit(255)
+        if xb_exit_code > 0:
+            sys.exit(xb_exit_code)
+            if xb_opt_debug: traceback.print_exc()
+        else:
+            _error("An uncaught exception error has occurred!")
+            traceback.print_exc()
 
+        sys.exit(255)
 
 class PyxOptions(object):
     config = None
