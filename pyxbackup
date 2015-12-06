@@ -1196,7 +1196,6 @@ def _purge_binlogs_to(old_binlog):
                 _say("%s matches binary log retention period, stopping" % l)
                 break
 
-
 def _purge_bitmaps_to(lsn):
     _say("Purging bitmap files to LSN: %s" % lsn)
 
@@ -1607,6 +1606,11 @@ def run_xb():
         ibx_log = "%s/innobackupex-backup.log" % xb_this_backup
 
     if xb_opt_apply_log and xb_backup_is_success:
+        if xb_opt_command == XB_CMD_FULL and xb_prepared_backup \
+                and os.path.isdir(xb_prepared_backup):
+            _say("Removing previous prepared backup ", xb_prepared_backup)
+            shutil.rmtree(xb_prepared_backup)
+
         xb_info_prep_start = date(time.time(), '%Y_%m_%d-%H_%M_%S')
 
         if xb_opt_command == XB_CMD_FULL:
@@ -1645,11 +1649,6 @@ def run_xb():
 
             # Update path to this backup to reflect movement to stor dir
             xb_this_backup = t
-
-            if xb_opt_command == XB_CMD_FULL and xb_prepared_backup \
-                    and os.path.isdir(xb_prepared_backup):
-                _say("Removing previous prepared backup ", xb_prepared_backup)
-                shutil.rmtree(xb_prepared_backup)
 
             shutil.move(ibx_log, "%s/innobackupex-backup.log" % t)
             ibx_log = "%s/innobackupex-backup.log" % t
