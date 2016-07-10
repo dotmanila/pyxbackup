@@ -16,3 +16,7 @@ def test__parse_port_param():
     assert(pxb._parse_port_param('9999')) == True
     assert(pxb.xb_opt_remote_nc_port_min) == 9999
     assert(pxb.xb_opt_remote_nc_port_max) == 9999
+
+def test__xb_version():
+    assert(pxb._xb_version(verstr = '2.2.13')) == [2, 2, 13]
+    assert(pxb._xb_version(verstr = '2.2.13', tof = True)) == 2.2
