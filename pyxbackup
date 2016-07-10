@@ -71,7 +71,7 @@ xb_stor_binlogs = None
 xb_curdate = None
 xb_cfg = None
 xb_cwd = None
-xb_version = 0.3
+xb_version = 0.4
 xb_ibx_opts = ''
 xb_ibx_bin = 'innobackupex'
 xb_zip_bin = 'gzip'
@@ -132,12 +132,14 @@ XB_SIGTERM_CAUGHT = False
 XB_VERSION_MAJOR = 0
 XB_VERSION_MINOR = 0
 XB_VERSION_REV = 0
+XB_VERSION = None
 
 XB_EXIT_COMPRESS_FAIL       = 1
 XB_EXIT_REMOTE_PUSH_FAIL    = 2
 XB_EXIT_EXTRACT_FAIL        = 4
 XB_EXIT_BITMAP_PURGE_FAIL   = 8
 XB_EXIT_NO_FULL             = 16
+XB_EXIT_DECRYPT_FAIL        = 32
 XB_EXIT_APPLY_FAIL          = 64
 XB_EXIT_INNOBACKUP_FAIL     = 65
 XB_EXIT_BINLOG_STREAM_FAIL  = 66
@@ -156,32 +158,52 @@ def date(unixtime, format = '%m/%d/%Y %H:%M:%S'):
     d = datetime.fromtimestamp(unixtime)
     return d.strftime(format)
 
-def _xb_version():
+def _xb_version(verstr = None, tof = False):
     global XB_VERSION_MAJOR
     global XB_VERSION_MINOR
     global XB_VERSION_REV
+    global XB_VERSION
+    global xb_ibx_bin
 
-    p = Popen(["xtrabackup", "--version"], stdout=PIPE, stderr=PIPE)
+    if verstr is None:
+        if XB_VERSION is not None:
+            if tof: return float("%d.%d" % (XB_VERSION_MAJOR, XB_VERSION_MINOR))
+            else: return True
+
+        p = Popen(["xtrabackup", "--version"], stdout=PIPE, stderr=PIPE)
+        
+        # weird, xtrabackup outputs version 
+        # string on STDERR instead of STDOUT
+        out, err = p.communicate()
+        ver = re.search('version ([\d\.]+)', err)
+        major, minor, rev = ver.group(1).split('.')
     
-    # weird, xtrabackup outputs version string on STDERR instead of STDOUT
-    out, err = p.communicate()
+        XB_VERSION_MAJOR = int(major) if major else 0
+        XB_VERSION_MINOR = int(minor) if minor else 0
+        XB_VERSION_REV = int(rev) if rev else 0
+        XB_VERSION = "%d.%d.%d" % (
+            XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV)
 
-    ver = re.search('version ([\d\.]+)', err)
-    major, minor, rev = ver.group(1).split('.')
-    
-    XB_VERSION_MAJOR = int(major) if major else 0
-    XB_VERSION_MINOR = int(minor) if minor else 0
-    XB_VERSION_REV = int(rev) if rev else 0
+        if XB_VERSION_MAJOR == 0:
+            _error(
+                "Invalid xtrabackup version or unable to determine valid " 
+                "version string or binary version non-GA release")
+            _error("Version string was \"%s\"" % err)
+            _die("Exiting")
 
-    if XB_VERSION_MAJOR == 0:
-        _error(
-            "Invalid xtrabackup version or unable to determine valid " 
-            "version string or binary version non-GA release")
-        _error("Version string was \"%s\"" % err)
-        _die("Exiting")
+        if XB_VERSION_MINOR >= 3: xb_ibx_bin = 'xtrabackup'
 
-    _debug("Found xtrabackup version %d.%d.%d" % (
-        XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
+        _debug("Found xtrabackup version %d.%d.%d" % (
+            XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
+    else:
+        major, minor, rev = verstr.split('.')
+        major = int(major) if major else 0
+        minor = int(minor) if minor else 0
+        rev = int(rev) if rev else 0
+
+        if tof: 
+            return float("%d.%d" % (major, minor))
+        else: return [major, minor, rev]
 
     return True
 
@@ -255,6 +277,19 @@ def _parse_port_param(param):
         return True
 
     return False
+
+def _read_magic_chunk(bfile, size):
+    """
+    This is a more reliable way of reading some files format
+
+    XBCRYP for xbcrypt files
+    XBSTCK for xbstream files
+    """
+
+    if not os.path.isfile(bfile):
+        return None
+
+    return open(bfile, 'rb').read(size)
 
 def _check_binary(name):
     bin = _which(name)
@@ -365,6 +400,8 @@ def _write_backup_info():
         inf.write("log_bin = %s\n" % xb_this_binlog)
         inf.write("master_log_bin = %s\n" % xb_this_master_binlog)
         inf.write("last_lsn = %s\n" % xb_this_last_lsn)
+        inf.write("source_version = %d.%d.%d\n" % (
+            XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
 
         inf.close()
 
@@ -413,7 +450,7 @@ def _read_backup_metadata(bkp):
 
     return meta
 
-def _apply_log(bkp, incrdir, final=False):
+def _apply_log(bkp, incrdir=None, final=False):
     if not os.path.isdir(bkp):
         _warn("Directory not found, ", bkp, " will not prepare")
         return False
@@ -425,22 +462,32 @@ def _apply_log(bkp, incrdir, final=False):
     ibx_cmd = ''
     ibx_log = "%s/%s-innobackupex-prepare.log" % (xb_opt_work_dir, xb_curdate)
     tee_cmd = "tee %s" % ibx_log
-    ibx_opts = "--apply-log --use-memory=%dM" % xb_opt_prepare_memory
+
+    ibx_opts = ""
+    if XB_VERSION_MINOR >= 3:
+        ibx_opts = '--prepare '
+    else: ibx_opts = '--apply-log '
+
+    ibx_opts += "--use-memory=%dM" % xb_opt_prepare_memory
     log_fd = None
     p_tee = None
 
     if not final:
-        ibx_opts += " --redo-only"
+        if XB_VERSION_MINOR >= 3: ibx_opts += " --apply-log-only"
+        else: ibx_opts += " --redo-only"
 
     if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
         _say('Preparing incremental backup: ', bkp)
-        ibx_opts += " --incremental-dir=%s %s" % (bkp, incrdir)
+        if XB_VERSION_MINOR >= 3: 
+            ibx_opts += " --incremental-dir %s --target-dir %s" % (bkp, incrdir)
+        else: ibx_opts += " --incremental-dir %s %s" % (bkp, incrdir)
     else:
         _say('Preparing full backup: ', bkp)
-        ibx_opts += " %s" % bkp
+        if XB_VERSION_MINOR >= 3: ibx_opts += " --target-dir %s" % bkp
+        else: ibx_opts += " %s" % bkp
 
     ibx_cmd = "%s %s" % (xb_ibx_bin, ibx_opts)
-    _debug("Running prepare command: ", ibx_cmd)
+    _say("Running prepare command: ", ibx_cmd)
 
     try:
         if not xb_opt_debug:
@@ -507,7 +554,7 @@ def _prepare_backup(bkp, prep, final=False):
                 break
 
         _say("Decompressing %s" % bkp_file)
-        if not _decompress(bkp_file, cmp_to):
+        if not _decompress(bkp_file, cmp_to, meta):
             _die("An error occurred while extracting %s to %s" % (bkp_file, cmp_to))
 
         if is_of_type == XB_CMD_FULL:
@@ -743,11 +790,148 @@ def _extract_xgz(xgz, dest):
 
     return True
 
-def _extract_stream_qpress(xbs, dest):
+def _extract_xbs(xbs, dest, meta = None):
+    xbs_cmd = "xbstream -x -C %s" % dest
+    xbc_cmd = 'cat %s' % xbs
+
+    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+
+    _say("Extracting from xbstream format: %s" % xbs)
+    FNULL = None
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        xbc = Popen(xbc_cmd, shell=True, stdout=PIPE, stderr=FNULL)
+        xbs = Popen(xbs_cmd, shell=True, stderr=FNULL, stdin=xbc.stdout)
+    else:
+        xbc = Popen(xbc_cmd, shell=True, stdout=PIPE)
+        xbs = Popen(xbs_cmd, shell=True, stdin=xbc.stdout)
+
+    r = xbc.poll()
+    while r is None:
+        time.sleep(5)
+        r = xbc.poll()
+
+    x = xbs.poll()
+    if x is None: xbs.wait()
+    x = xbs.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Extracting ", xbs, " to ", dest, " failed.")
+        _error("Extract command was: %s | %s" % (xbc_cmd, xbs_cmd))
+        _error("Extract returned exit codes were: %s and %s" % (str(r), str(x)))
+        _exit_code(XB_EXIT_EXTRACT_FAIL)
+        _die("Decompress of xbstream file %s failed." % xbs)
+
+    return True
+
+def _extract_xbcrypt(dest, meta = None):
+    """ Decrypt a backup set encrypted with xbcrypt
+    if xrabackup version is < 2.3 we use xtrabackup --decrypt
+    via _extract_xbcrypt_file which decrypts the files one
+    at a timedelta
+    """
+
+    if _xb_version(tof = True) < 2.3:
+        _say(
+            "You are running an older xtrabackup version "
+            "that do not have --decrypt support, "
+            "switching manual decompresssion")
+        return _extract_xbcrypt_file(dest)
+
+    # Now we decompress *.xbcrypt files
+    ibx_cmd = '%s --decrypt=%s --encrypt-key-file=%s --target-dir=%s' % (
+        xb_ibx_bin, xb_opt_encrypt, xb_opt_encrypt_key_file, dest)
+
+    FNULL = None
+
+    if not xb_opt_debug:
+        FNULL = open(os.devnull, 'w')
+        ibx = Popen(ibx_cmd, shell=True, stdout=FNULL, stderr=FNULL)
+    else:
+        ibx = Popen(ibx_cmd, shell=True)
+
+    r = ibx.poll()
+    while r is None:
+        time.sleep(5)
+        r = ibx.poll()
+
+    if FNULL is not None:
+        FNULL.close()
+
+    if r != 0:
+        _error("Decrypt of backup failed.")
+        _error("Decrypt command was: %s" % ibx_cmd)
+        _error("Decrypt returned exit code was: %s" % str(r))
+        _exit_code(XB_EXIT_DECRYPT_FAIL)
+        _die("Decrypt of backup %s failed." % dest)
+
+    _cleanup_files_by_ext(dest, 'xbcrypt')
+
+    return True
+
+def _extract_xbcrypt_file(cfile):
+    """ cfile is encrypted file or folder, this method
+    traverses individual xbcrypt files if --decrypt option is
+    not available
+    """
+
+    if os.path.isdir(cfile):
+        _debug("Decrypting from directory: %s" % cfile)
+        ls = os.listdir(cfile)
+        for f in ls:
+            _extract_xbcrypt_file(os.path.join(cfile, f))
+
+    elif os.path.isfile(cfile) and '.xbcrypt' == cfile[-8:]:
+        xbc_cmd = 'xbcrypt --decrypt --encrypt-algo=%s ' % xb_opt_encrypt
+        xbc_cmd += '--encrypt-key-file=%s --input=%s --output=%s' % (
+            xb_opt_encrypt_key_file, cfile, cfile[:-8])
+
+        FNULL = None
+
+        _debug("Decrypting from xbcrypt file: %s" % cfile)
+
+        if not xb_opt_debug:
+            FNULL = open(os.devnull, 'w')
+            xbc = Popen(xbc_cmd, shell=True, stdout=FNULL, stderr=FNULL)
+        else:
+            xbc = Popen(xbc_cmd, shell=True)
+
+        r = xbc.poll()
+        t = 0.1
+        while r is None:
+            time.sleep(t)
+            # Increase time per loop
+            if t <= 5: t = t*1.5
+            r = xbc.poll()
+
+        if FNULL is not None:
+            FNULL.close()
+
+        if r != 0:
+            _error("Extracting ", cfile, " failed.")
+            _error("Extract command was: %s" % xbc_cmd)
+            _error("Extract returned exit codes were: %s" % str(r))
+            _exit_code(XB_EXIT_DECRYPT_FAIL)
+            _die("Decrypt of file %s failed." % cfile)
+
+        os.remove(cfile)
+
+    else: 
+        _warn("File %s is not a valid xxbcrypt file." % cfile)
+
+    return True
+
+def _extract_stream_qpress(xbs, dest, meta = None):
     xbc_cmd = None
     is_encrypted = False
 
-    if xbs[-14:]  == 'xbs.qp.xbcrypt':
+    xbs_cmd = "xbstream -x -C %s" % dest
+
+    if xbs[-14:] == 'xbs.qp.xbcrypt':
         if not xb_opt_encrypt:
             _die("Backup is %s is encrypted, no encryption options provided" % qp)
         else:
@@ -755,12 +939,18 @@ def _extract_stream_qpress(xbs, dest):
             xbc_cmd += '--encrypt-key-file=%s --input=%s' % (xb_opt_encrypt_key_file, xbs)
 
         is_encrypted = True
+
+        """ xtrabackup 2.3+ made a change with streamed encrypted
+        backups
+        """
+        if _read_magic_chunk(xbs, 6) == 'XBSTCK':
+            _extract_xbs(xbs, dest, meta)
+            _extract_xbcrypt(dest, meta)
+            return _extract_ibx_decompress(dest, meta)
     else:
         xbc_cmd = 'cat %s' % xbs
 
     FNULL = None
-
-    xbs_cmd = "xbstream -x -C %s" % dest
 
     _debug("Running xbcrypt command: %s" % xbc_cmd)
     _debug("Running xbstream command: %s" % xbs_cmd)
@@ -794,15 +984,7 @@ def _extract_stream_qpress(xbs, dest):
         _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
-    if (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4) or \
-            XB_VERSION_MAJOR < 2 or (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR <= 0):
-        _say(
-            "You are running an older xtrabackup version "
-            "that do not have --decompress support, "
-            "switching manual decompresssion")
-        return _extract_qp_decompress(dest)
-    else:
-        return _extract_ibx_decompress(dest)
+    return _extract_ibx_decompress(dest)
 
 def _extract_nostream_qpress(qp, dest):
     xbc_cmd = None
@@ -882,6 +1064,11 @@ def _extract_nostream_qpress(qp, dest):
     return True
 
 def _extract_qp_decompress(dest):
+    """ this may not be efficient with millions of tables
+    unlike how _extract_xbcrypt does it with recursive which
+    avoids extra stat()
+    """
+
     for root, dirs, files in os.walk(dest):
         for f in files:
             if f.endswith('.qp'):
@@ -897,7 +1084,7 @@ def _extract_qp_file(file):
 
     r = qp.poll()
     while r is None:
-        time.sleep(5)
+        time.sleep(0.5)
         r = qp.poll()
 
     if r != 0:
@@ -909,9 +1096,20 @@ def _extract_qp_file(file):
 
     return True
 
-def _extract_ibx_decompress(dest):
+def _extract_ibx_decompress(dest, meta = None):
+    if (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR == 1 and XB_VERSION_REV < 4) or \
+        XB_VERSION_MAJOR < 2 or (XB_VERSION_MAJOR == 2 and XB_VERSION_MINOR <= 0):
+        _say(
+            "You are running an older xtrabackup version "
+            "that do not have --decompress support, "
+            "switching manual decompresssion")
+        return _extract_qp_decompress(dest)
+
     # Now we decompress *.qp files
-    ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
+    if xb_ibx_bin == 'xtrabackup':
+        ibx_cmd = xb_ibx_bin + ' --decompress --target-dir=%s' % dest
+    else:
+        ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
     FNULL = None
 
     if not xb_opt_debug:
@@ -935,9 +1133,11 @@ def _extract_ibx_decompress(dest):
         _exit_code(XB_EXIT_EXTRACT_FAIL)
         return False
 
+    _cleanup_files_by_ext(dest, 'qp')
+
     return True
 
-def _decompress(archive, dest):
+def _decompress(archive, dest, meta = None):
     if not os.path.isdir(dest):
         _warn("Destination directory not found, ", dest, " cannot compress")
         return False
@@ -947,17 +1147,17 @@ def _decompress(archive, dest):
         return False
 
     if archive[-6:] == 'tar.gz':
-        return _extract_tgz(archive, dest)
+        return _extract_tgz(archive, dest, meta)
     elif archive[-6:] == 'xbs.gz':
-        return _extract_xgz(archive, dest)
+        return _extract_xgz(archive, dest, meta)
     elif archive[-6:]  == 'xbs.qp':
-        return _extract_stream_qpress(archive, dest)
+        return _extract_stream_qpress(archive, dest, meta)
     elif archive[-14:]  == 'xbs.qp.xbcrypt':
-        return _extract_stream_qpress(archive, dest)
+        return _extract_stream_qpress(archive, dest, meta)
     elif archive[-2:] == 'qp':
-        return _extract_nostream_qpress(archive, dest)
+        return _extract_nostream_qpress(archive, dest, meta)
     elif archive[-10:] == 'qp.xbcrypt':
-        return _extract_nostream_qpress(archive, dest)
+        return _extract_nostream_qpress(archive, dest, meta)
     else:
         _warn("Unknown archive format %s" % archive)
         return False
@@ -1009,6 +1209,16 @@ def _init_log_file(path, close=False, create=True):
             _debug("Log fd: %s" % str(xb_log_fd))
         else:
             _warn("Log file %s does not exist, aborting rename" % xb_log_file)
+
+def _cleanup_files_by_ext(fpath, ext):
+    if os.path.isdir(fpath):
+        ls = os.listdir(fpath)
+        for f in ls:
+            _cleanup_files_by_ext(os.path.join(fpath, f), ext)
+    elif os.path.isfile(fpath) and fpath.endswith(".%s" % ext):
+        os.remove(fpath)
+    #else:
+    #    _debug("Path does not match extension %s" % fpath)
 
 def _cleanup_dir(folder, excludes = []):
     _say("Cleaning up %s excluding %s" % (folder, str(excludes)))
@@ -1086,8 +1296,13 @@ def _notify_by_email(subject, msg="", to=None):
 
 def _ssh_execute(cmd, out=False, nowait=False):
     r_cmd = "(%s) || echo 'CMD_FAIL'" % cmd
-    ssh_cmd = "ssh -o PasswordAuthentication=no -q %s %s@%s \"%s\"" % (
-        xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, r_cmd)
+    
+    if xb_opt_debug:
+        ssh_cmd = "ssh -o PasswordAuthentication=no"
+    else: ssh_cmd = "ssh -o PasswordAuthentication=no -q"
+
+    ssh_cmd = "%s %s %s@%s \"%s\"" % (
+        ssh_cmd, xb_opt_ssh_opts, xb_opt_ssh_user, xb_opt_remote_host, r_cmd)
     _debug("Executing remote command %s" % ssh_cmd)
 
     tee_cmd = "tee %s" % XB_SSH_TMPFILE
@@ -1272,6 +1487,8 @@ def _open_remote_nc_port(port, pipe_cmd):
         time.sleep(5)
 
         is_open = _is_remote_nc_port_open(port)
+        _debug("Got %d from remote port check" % is_open)
+        
         if is_open == 1: break
         if is_open == 0 and xb_opt_debug:
             _debug("Failed to open remote nc port after %d attempt" % i)
@@ -1454,6 +1671,13 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
+
+    if xb_opt_mysql_cnf:
+        xb_ibx_opts = ' --defaults-file=' + xb_opt_mysql_cnf + ' ' + xb_ibx_opts
+
+    if XB_VERSION_MINOR >= 3:
+        xb_ibx_opts = ' --backup' + xb_ibx_opts        
+
     xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
     if xb_opt_mysql_user:
         xb_ibx_opts = (' --user=%s ' % xb_opt_mysql_user) + xb_ibx_opts
@@ -1461,8 +1685,11 @@ def run_xb():
     if xb_opt_mysql_pass:
         xb_ibx_opts = (' --password=%s ' % xb_opt_mysql_pass) + xb_ibx_opts
 
-    if xb_opt_mysql_cnf:
-        xb_ibx_opts = ' --defaults-file=' + xb_opt_mysql_cnf + ' ' + xb_ibx_opts
+    if xb_opt_mysql_host:
+        xb_ibx_opts = (' --host=%s ' % xb_opt_mysql_host) + xb_ibx_opts
+
+    if xb_opt_mysql_sock:
+        xb_ibx_opts = (' --socket=%s ' % xb_opt_mysql_sock) + xb_ibx_opts
 
     if xb_opt_remote_push_only \
             and not _ssh_execute("mkdir -p %s" % xb_this_backup_remote):
@@ -1485,13 +1712,19 @@ def run_xb():
     # Check if rsync binary exists, if so let's use it for uncompressed 
     # on-streaming backups
     xb_rsync_bin = _which('rsync')
-    if xb_rsync_bin is not None and not xb_opt_compress and not xb_opt_remote_push_only:
+    if xb_rsync_bin is not None and \
+            ((not xb_opt_compress and not xb_opt_remote_push_only) or \
+            (xb_opt_apply_log)):
         xb_ibx_opts += ' --rsync'
 
     if xb_opt_extra_ibx_options is not None:
         xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
 
-    xb_ibx_opts += ' ' + xb_this_backup
+    if XB_VERSION_MINOR >= 3:
+        # --binlog-info on lp152764811
+        xb_ibx_opts += ' --binlog-info=on --target-dir ' + xb_this_backup
+    else:
+        xb_ibx_opts += ' ' + xb_this_backup
 
     try:
         run_cmd = xb_ibx_bin + xb_ibx_opts
@@ -1667,6 +1900,8 @@ def run_xb():
             shutil.move(ibx_log, "%s/innobackupex-backup.log" % t)
             ibx_log = "%s/innobackupex-backup.log" % t
             _say("Backup log has been moved to ", ibx_log)
+        else:
+            _die('Apply log failed, aborting!')
     else: xb_prepare_is_success = True
 
     # Let's grab our binary log information
@@ -1764,7 +1999,10 @@ def run_xb_incr():
     else:
         xb_this_backup = os.path.join(xb_opt_work_dir, xb_curdate)
 
-    xb_ibx_opts = ' --incremental --incremental-basedir='
+    if XB_VERSION_MINOR >= 3:
+        xb_ibx_opts = ' --incremental-basedir='    
+    else:
+        xb_ibx_opts = ' --incremental --incremental-basedir='
 
     if xb_opt_remote_push_only:
 
@@ -1982,6 +2220,9 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
                     "%s to %s" % (current_bkp_path, prepare_path))
 
             if current_bkp == the_backup:
+                # We call a final apply-log on the resulting
+                # set if finalize == True
+                if finalize: _apply_log(prepare_path, final = finalize)
                 break
 
     _say("Prepare of backup %s successfully completed" % the_backup)
