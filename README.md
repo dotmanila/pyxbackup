@@ -135,6 +135,12 @@ Below are some valid options recognized from the configuration file:
     # same server, make sure to assign unique ports to each.
     remote_nc_port=9999
 
+    # When pushing backups to remote Linux servers, you can specify
+    # the path to the pyxbackup script on the remote server and 
+    # other config/options
+    # file if they are not in default locations ($PATH and /etc/pyxbackup.cnf)
+    remote_script=/usr/local/bin/pyxbackup --config=/path/to/custom/pyxbackup.cnf
+
 
 Minimum Configuration
 =====================
