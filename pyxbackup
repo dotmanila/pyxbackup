@@ -2971,6 +2971,12 @@ Valid commands are:
         _check_binary('nc')
         _check_binary('netstat')
 
+    if xb_opt_encrypt or xb_opt_encrypt_key_file:
+        _check_binary('xbcrypt')
+
+    if xb_opt_compress:
+        _check_binary('xbstream')
+
     # store xtrabackup version numbers
     _xb_version()
 
