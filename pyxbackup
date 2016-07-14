@@ -986,7 +986,7 @@ def _extract_stream_qpress(xbs, dest, meta = None):
 
     return _extract_ibx_decompress(dest)
 
-def _extract_nostream_qpress(qp, dest):
+def _extract_nostream_qpress(qp, dest, meta = None):
     xbc_cmd = None
     is_encrypted = False
 
