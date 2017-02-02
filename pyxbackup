@@ -1407,6 +1407,7 @@ def _purge_binlogs_to(old_binlog):
                 os.remove(os.path.join(xb_stor_binlogs, l))
     else:
         x = int(time.time())-(xb_opt_retention_binlogs*24*60*60)
+        prev = None
         for l in xb_binlogs_list:
             f = os.path.join(xb_stor_binlogs, l)
             b = open(f, 'rb')
@@ -1416,12 +1417,17 @@ def _purge_binlogs_to(old_binlog):
             _debug("%s created at %s" % (l, ts_out))
             b.close()
 
-            if ts < x: 
-                _debug("Pruning %s" % l)
-                os.remove(f)
-            else: 
-                _say("%s matches binary log retention period, stopping" % l)
-                break
+            if prev is not None: 
+                if ts < x:
+                    _debug("Pruning %s" % prev)
+                    os.remove(prev)
+                    prev = f
+                # Current binlog creation ts is later than start of retention period
+                # We keep from this binlog and keep the previous one as well
+                else: 
+                    _say("%s matches binary log retention period, stopping" % f)
+                    break
+            else: prev = f 
 
 def _purge_bitmaps_to(lsn):
     _say("Purging bitmap files to LSN: %s" % lsn)
@@ -2976,6 +2982,9 @@ Valid commands are:
 
     if xb_opt_compress:
         _check_binary('xbstream')
+
+    if xb_opt_compress_with == 'qpress':
+        _check_binary('qpress')
 
     # store xtrabackup version numbers
     _xb_version()
