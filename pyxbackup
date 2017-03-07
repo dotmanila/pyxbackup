@@ -4,7 +4,7 @@
 #
 # @author Jervin Real <jervin.real@percona.com>
 
-import sys, traceback, os, errno, signal
+import sys, traceback, os, errno, signal, socket
 import time, calendar, shutil, re, pwd
 import smtplib, MySQLdb, base64
 from datetime import datetime, timedelta
@@ -3224,7 +3224,7 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, _sigterm_handler)
         xb_curdate = date(time.time(), '%Y_%m_%d-%H_%M_%S')
         xb_cwd = os.path.dirname(os.path.realpath(__file__))
-        xb_hostname = os.uname()[1]
+        xb_hostname = socket.getfqdn()
         xb_user = pwd.getpwuid(os.getuid())[0]
 
         dt = datetime.strptime(xb_curdate, '%Y_%m_%d-%H_%M_%S')
