@@ -1288,6 +1288,13 @@ def _notify_by_email(subject, msg="", to=None):
         s = smtplib.SMTP('127.0.0.1')
         s.sendmail(fr, recpt.split(','), hdr + msg)
         s.quit()
+
+    except smtplib.SMTPServerDisconnected:
+        _warn("Disconnected from SMTP server, reconnecting")
+        s = smtplib.SMTP('127.0.0.1')
+        s.sendmail(fr, recpt.split(','), hdr + msg)
+        s.quit()
+        
     except Exception, e:
         if xb_opt_debug: traceback.print_exc()
         _die("Could not send mail ({0}): {1}".format(e.errno, e.strerror))
