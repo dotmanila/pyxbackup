@@ -1684,10 +1684,6 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
-
-    if xb_opt_mysql_cnf:
-        xb_ibx_opts = ' --defaults-file=' + xb_opt_mysql_cnf + ' ' + xb_ibx_opts
-
     if XB_VERSION_MINOR >= 3:
         xb_ibx_opts = ' --backup' + xb_ibx_opts        
 
@@ -1703,6 +1699,9 @@ def run_xb():
 
     if xb_opt_mysql_sock:
         xb_ibx_opts = (' --socket=%s ' % xb_opt_mysql_sock) + xb_ibx_opts
+
+    if xb_opt_mysql_cnf:
+        xb_ibx_opts = ' --defaults-file=' + xb_opt_mysql_cnf + ' ' + xb_ibx_opts
 
     if xb_opt_remote_push_only \
             and not _ssh_execute("mkdir -p %s" % xb_this_backup_remote):
