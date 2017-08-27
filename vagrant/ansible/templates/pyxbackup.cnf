@@ -1,0 +1,5 @@
+[pyxbackup]
+work_dir		= /p/bkp/work
+stor_dir		= /p/bkp/stor
+mysql_user		= msandbox
+mysql_pass		= msandbox

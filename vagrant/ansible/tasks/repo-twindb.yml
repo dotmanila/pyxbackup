@@ -1,0 +1,9 @@
+---
+- name: download twindb repo
+  get_url:
+    url: https://packagecloud.io/install/repositories/twindb/main/script.rpm.sh
+    dest: /root/twindb_repo.sh
+- name: install twindb repo
+  shell: bash /root/twindb_repo.sh
+  args:
+    creates: /etc/yum.repos.d/twindb_main.repo

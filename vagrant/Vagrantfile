@@ -1,0 +1,37 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+NODE_NAMES = ["pxb"]
+START_IP = 0
+
+Vagrant.configure("2") do |config|
+  #config.ssh.insert_key = false
+  config.ssh.pty = true
+  config.vm.box = "revin/pyxbackup"
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "../", "/usr/local/pyxbackup"
+  config.vm.provider "virtualbox" do |v|
+    v.memory = 2048
+    v.cpus = 4
+    v.linked_clone = true
+  end
+  
+  i = START_IP
+
+  NODE_NAMES.each do |nn|
+    ipaddr = "192.168.56.3" + i.to_s
+    i = i+1
+    config.vm.define nn do |box|
+      box.vm.hostname = nn
+      box.vm.network 'private_network', ip: ipaddr
+    end
+  end
+        
+  config.vm.provision "ansible" do |ansible|
+    ansible.playbook = "ansible/pyxbackup.yml"
+    ansible.sudo = true
+    #ansible.verbose = 'vvv'
+    ansible.extra_vars = {
+      mysql_version: '5.7'
+    }
+  end
+end

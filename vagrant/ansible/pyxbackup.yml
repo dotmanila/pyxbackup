@@ -1,0 +1,73 @@
+---
+- hosts: all
+  tasks:
+  - name: create directories
+    file:
+      path: "{{ item }}"
+      owner: vagrant
+      group: vagrant
+      mode: 0755
+      state: directory
+    with_items:
+      - /p/msb
+      - /p/bkp
+      - /p/bkp/stor
+      - /p/bkp/work
+      - /home/vagrant/xb
+      - /p/bkp/r
+      - /p/bkp/r/stor
+      - /p/bkp/r/work
+
+  - name: copy mysql binaries urls
+    copy:
+      src: files/binaries-mysql
+      dest: /home/vagrant/mysql/binaries
+      mode: 0644
+      owner: vagrant
+      group: vagrant
+
+  - name: copy xtrabackup binaries urls
+    copy:
+      src: files/binaries-xtrabackup
+      dest: /home/vagrant/xb/binaries
+      mode: 0644
+      owner: vagrant
+      group: vagrant
+
+  - name: upload sandboxes script
+    copy:
+      src: files/make-sandboxes.sh
+      dest: /usr/bin/make-sandboxes
+      mode: 0755
+
+  - name: upload sysbench scripts
+    copy:
+      src: files/run-sysbench.sh
+      dest: /usr/bin/run-sysbench
+      mode: 0755
+
+  - name: upload xtrabackups scripts
+    copy:
+      src: files/make-xtrabackups.sh
+      dest: /usr/bin/make-xtrabackups
+      mode: 0755
+
+  - name: upload tests scripts
+    copy:
+      src: files/run-tests.sh
+      dest: /usr/bin/run-tests
+      mode: 0755
+
+  - name: upload pyxbackup test commands
+    copy:
+      src: files/commands-pyxbackup
+      dest: /home/vagrant/commands-pyxbackup
+      mode: 0755
+
+  - name: skeleton pyxbackup.cnf
+    template:
+      src: pyxbackup.cnf
+      dest: /etc/pyxbackup.cnf
+      mode: 0644
+      owner: vagrant
+      group: vagrant

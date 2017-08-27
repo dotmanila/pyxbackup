@@ -1,0 +1,4 @@
+--compress -q full
+--compress -q incr
+--compress --compress-with=qpress -q full
+--compress --compress-with=qpress -q incr
