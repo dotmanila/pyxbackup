@@ -23,7 +23,7 @@ xb_opt_mysql_user = None
 xb_opt_mysql_pass = None
 xb_opt_mysql_host = 'localhost'
 xb_opt_mysql_port = 3306
-xb_opt_mysql_sock = '/tmp/mysql.sock'
+xb_opt_mysql_sock = None
 xb_opt_mysql_cnf = None
 xb_opt_retention_binlogs = False
 xb_opt_compress = False
@@ -3460,7 +3460,7 @@ class PyxOptions(object):
     mysql_pass = None
     mysql_host = 'localhost'
     mysql_port = 3306
-    mysql_sock = '/tmp/mysql.sock'
+    mysql_sock = None
     mysql_cnf = None
     retention_binlogs = False
     compress = False
