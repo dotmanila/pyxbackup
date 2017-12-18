@@ -1430,7 +1430,7 @@ def _newest_binlog_from_backup():
         return False
 
     if xb_incr_list is not None and len(xb_incr_list) > 0:
-        backup = xb_incr_list.values()[0][0] 
+        backup = xb_incr_list.values()[len(xb_incr_list)-1][0]
         return _binlog_from_backup(backup, xb_last_full)
     else:
         backup = xb_full_list[0]
