@@ -1161,9 +1161,9 @@ def _decompress(archive, dest, meta = None):
         return False
 
     if archive[-6:] == 'tar.gz':
-        return _extract_tgz(archive, dest, meta)
+        return _extract_tgz(archive, dest)
     elif archive[-6:] == 'xbs.gz':
-        return _extract_xgz(archive, dest, meta)
+        return _extract_xgz(archive, dest)
     elif archive[-6:]  == 'xbs.qp':
         return _extract_stream_qpress(archive, dest, meta)
     elif archive[-14:]  == 'xbs.qp.xbcrypt':
