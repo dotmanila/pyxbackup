@@ -4,7 +4,7 @@ ssh-keygen -t rsa
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
 chmod 0755 /usr/local/pyxbackup/pyxbackup
 
-cd /home/vagrant/xb
+cd /home/ubuntu/xb
 
 # Download tarballs based on list
 while read url; do echo $url; wget $url; done < binaries

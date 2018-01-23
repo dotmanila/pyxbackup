@@ -1,6 +1,13 @@
 #!/bin/bash
 
+export SANDBOX_BINARY=/home/ubuntu/mysql
+export SANDBOX_HOME=/home/ubuntu/sandboxes
 cd $SANDBOX_BINARY
+
+sudo ln -s /lib/x86_64-linux-gnu/libssl.so.1.0.0 /lib/x86_64-linux-gnu/libssl.so.10
+sudo ln -s /lib/x86_64-linux-gnu/libcrypto.so.1.0.0 /lib/x86_64-linux-gnu/libcrypto.so.10
+sudo ln -s /lib/x86_64-linux-gnu/libssl.so.1.0.0 /usr/lib/x86_64-linux-gnu/libssl.so.10
+sudo ln -s /lib/x86_64-linux-gnu/libcrypto.so.1.0.0 /usr/lib/x86_64-linux-gnu/libcrypto.so.10
 
 # Download tarballs based on list
 while read url; do echo $url; wget $url; done < binaries

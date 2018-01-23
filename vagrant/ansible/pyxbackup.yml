@@ -1,11 +1,42 @@
 ---
 - hosts: all
   tasks:
+
+  - name: determine distrib
+    command: lsb_release -sc
+    register: distrib
+
+  - name: determine kernel
+    command: uname -r
+    register: kernel
+
+  - name: percona repo
+    apt:
+      deb: https://repo.percona.com/apt/percona-release_0.1-4.{{ distrib.stdout }}_all.deb
+      state: present
+
+  - name: install essential packages
+    apt:
+      name: make,qpress,netcat,socat,sysstat,mbuffer,libaio1,sysbench,lsof,percona-toolkit,linux-tools-common,linux-tools-{{ kernel.stdout }},linux-tools-{{ kernel.stdout }},python-mysqldb
+      update_cache: true
+      state: present
+
+  - name: install build packages
+    apt:
+      name: build-essential,autoconf,libtool,gawk,alien,fakeroot,linux-headers-{{ kernel.stdout }}
+      update_cache: true
+      state: present
+
+  - name: custom libgcrypt for xtrabackup binaries
+    apt:
+      deb: https://launchpadlibrarian.net/201289896/libgcrypt11_1.5.3-2ubuntu4.2_amd64.deb
+      state: present
+
   - name: create directories
     file:
       path: "{{ item }}"
-      owner: vagrant
-      group: vagrant
+      owner: ubuntu
+      group: ubuntu
       mode: 0755
       state: directory
     with_items:
@@ -13,7 +44,8 @@
       - /p/bkp
       - /p/bkp/stor
       - /p/bkp/work
-      - /home/vagrant/xb
+      - /home/ubuntu/xb
+      - /home/ubuntu/mysql
       - /p/bkp/r
       - /p/bkp/r/stor
       - /p/bkp/r/work
@@ -21,18 +53,24 @@
   - name: copy mysql binaries urls
     copy:
       src: files/binaries-mysql
-      dest: /home/vagrant/mysql/binaries
+      dest: /home/ubuntu/mysql/binaries
       mode: 0644
-      owner: vagrant
-      group: vagrant
+      owner: ubuntu
+      group: ubuntu
 
   - name: copy xtrabackup binaries urls
     copy:
       src: files/binaries-xtrabackup
-      dest: /home/vagrant/xb/binaries
+      dest: /home/ubuntu/xb/binaries
       mode: 0644
-      owner: vagrant
-      group: vagrant
+      owner: ubuntu
+      group: ubuntu
+
+  - name: upload mysql sandbox installer
+    copy:
+      src: files/mysql-sandbox.sh
+      dest: /usr/bin/mysql-sandbox
+      mode: 0755
 
   - name: upload sandboxes script
     copy:
@@ -58,10 +96,16 @@
       dest: /usr/bin/run-tests
       mode: 0755
 
+  - name: upload pyxbackup
+    copy:
+      src: ../../pyxbackup
+      dest: /usr/bin/pyxbackup
+      mode: 0755
+
   - name: upload pyxbackup test commands
     copy:
       src: files/commands-pyxbackup
-      dest: /home/vagrant/commands-pyxbackup
+      dest: /home/ubuntu/commands-pyxbackup
       mode: 0755
 
   - name: skeleton pyxbackup.cnf
@@ -69,5 +113,5 @@
       src: pyxbackup.cnf
       dest: /etc/pyxbackup.cnf
       mode: 0644
-      owner: vagrant
-      group: vagrant
+      owner: ubuntu
+      group: ubuntu
