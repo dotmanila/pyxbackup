@@ -2776,6 +2776,9 @@ Valid commands are:
     restore-set: Restore to a specific backup set
     last-lsn: Print out to_lsn value of last backup for incremental use
     wipeout: Cleanup all existing backups
+    prune: Prune backups manually based on configured retention sets
+    binlog-stream: When configured for binary log streaming, start the process
+    meta: Internal command only, when communicating with remote server
 
 """
     p_epilog = p_epilog % XB_BIN_NAME
@@ -3518,7 +3521,10 @@ class PyxOptions(object):
             "\tapply-last: Prepare to the most recent backup\n"
             "\trestore-set: Restore to a specific backup set\n"
             "\tlast-lsn: Print out to_lsn value of last backup for incremental use\n"
-            "\twipeout: Cleanup all existing backups\n"]
+            "\twipeout: Cleanup all existing backups\n"
+            "\tprune: Prune backups manually based on configured retention sets\n"
+            "\tbinlog-stream: When configured for binary log streaming, start the process\n"
+            "\tmeta: Internal command only, when communicating with remote server\n"]
         p_epilog = p_epilog % XB_BIN_NAME
 
         parser = PyxOptParser(p_usage, version="%prog " + str(xb_version),
