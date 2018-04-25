@@ -533,7 +533,7 @@ def _apply_log(bkp, incrdir=None, final=False):
         return True
 
     except Exception, e:
-        _error("Command was: ", ibx_cmd)
+        _error("Command was: ", ibx_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
         _exit_code(XB_EXIT_APPLY_FAIL)
@@ -1371,7 +1371,7 @@ def _ssh_execute(cmd, out=False, nowait=False):
         return True
 
     except Exception, e:
-        _error("Command was: ", ssh_cmd)
+        _error("Command was: ", ssh_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
         raise
@@ -2010,7 +2010,7 @@ def run_xb():
         xb_info_bkp_end = date(time.time(), '%Y_%m_%d-%H_%M_%S')
 
     except Exception, e:
-        _error("Command was: ", run_cmd)
+        _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
         _exit_code(XB_EXIT_INNOBACKUP_FAIL)
@@ -2545,7 +2545,7 @@ def run_binlog_stream():
 
         os.chdir(xb_cwd)
     except Exception, e:
-        _error("Command was: ", run_cmd)
+        _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_BINLOG_STREAM_FAIL)
         raise
