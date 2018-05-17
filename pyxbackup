@@ -30,6 +30,10 @@ xb_opt_compress = False
 xb_opt_compress_with = 'gzip'
 xb_opt_apply_log = False
 xb_opt_prepare_memory = 128
+xb_opt_parallel = 4
+xb_opt_no_rsync = False
+xb_opt_no_stream = False
+xb_opt_history = False
 xb_opt_retention_sets = 2
 xb_opt_retention_months = 0
 xb_opt_retention_weeks = 0
@@ -1851,6 +1855,16 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
+    if XB_VERSION_MINOR >= 2 and xb_opt_history:
+        if xb_opt_command in (XB_CMD_FULL, XB_CMD_INCR):
+            xb_ibx_opts = ' --history=' + xb_curdate + xb_ibx_opts
+
+        if xb_opt_command == XB_CMD_INCR:
+            if xb_last_incr:
+                xb_ibx_opts = ' --incremental-history-name=' + xb_last_incr + xb_ibx_opts
+            elif xb_last_full:
+                xb_ibx_opts = ' --incremental-history-name=' + xb_last_full + xb_ibx_opts
+
     if XB_VERSION_MINOR >= 3:
         xb_ibx_opts = ' --backup' + xb_ibx_opts        
 
@@ -1878,11 +1892,12 @@ def run_xb():
         if xb_opt_compress_with == 'qpress':
             xb_ibx_opts += ' --compress --compress-threads=4'
 
-        xb_ibx_opts += ' --stream=xbstream --parallel=4'
+        if not xb_opt_no_stream:
+            xb_ibx_opts += " --stream=xbstream"
         xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
         os.mkdir(xb_this_backup)
-    else:
-        xb_ibx_opts += ' --parallel=4'
+
+    xb_ibx_opts += " --parallel=%d" % xb_opt_parallel
 
     if xb_opt_encrypt and not xb_opt_apply_log:
         xb_ibx_opts += ' --encrypt=%s --encrypt-threads=4 --encrypt-key-file=%s' % (
@@ -1890,11 +1905,12 @@ def run_xb():
 
     # Check if rsync binary exists, if so let's use it for uncompressed 
     # on-streaming backups
-    xb_rsync_bin = _which('rsync')
-    if xb_rsync_bin is not None and \
-            ((not xb_opt_compress and not xb_opt_remote_push_only) or \
-            (xb_opt_apply_log)):
-        xb_ibx_opts += ' --rsync'
+    if not xb_opt_no_rsync:
+        xb_rsync_bin = _which('rsync')
+        if xb_rsync_bin is not None and \
+                ((not xb_opt_compress and not xb_opt_remote_push_only) or \
+                (xb_opt_apply_log)):
+            xb_ibx_opts += ' --rsync'
 
     if xb_opt_extra_ibx_options is not None:
         xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
@@ -2715,6 +2731,10 @@ def init():
     global xb_opt_compress_with
     global xb_opt_apply_log
     global xb_opt_prepare_memory
+    global xb_opt_parallel
+    global xb_opt_no_rsync
+    global xb_opt_no_stream
+    global xb_opt_history
     global xb_opt_retention_sets
     global xb_opt_retention_months
     global xb_opt_retention_weeks
@@ -2847,6 +2867,14 @@ Valid commands are:
         help='Verify backups with --apply-log, requires enough disk space on --workdir')
     parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
         help='How much memory to use with innobackupex --use-memory in MB, default 128M')
+    parser.add_option('', '--parallel', dest='parallel', type="int",
+        help='How much parallel to use with innobackupex --parallel, default 4')
+    parser.add_option('', '--no-rsync', dest='no_rsync', action="store_true",
+        help='Do not use Rsync, default False', default=False)
+    parser.add_option('', '--no-stream', dest='no_stream', action="store_true",
+        help='Do not use stream with innobackupex, default False', default=False)
+    parser.add_option('', '--history', dest='history', action="store_true",
+        help='Store backup history on the server, default False', default=False)
     parser.add_option('-o', '--status-format', dest='status_format', type="string",
         help=('For status command, what output format, default=none, '
             'possible values: none, nagios, zabbix (cli)'))
@@ -3005,6 +3033,18 @@ Valid commands are:
         if xb_cfg.has_option(xb_opt_config_section, 'prepare_memory'):
             xb_opt_prepare_memory = int(xb_cfg.get(xb_opt_config_section, 'prepare_memory'))
 
+        if xb_cfg.has_option(xb_opt_config_section, 'parallel'):
+            xb_opt_parallel = int(xb_cfg.get(xb_opt_config_section, 'parallel'))
+
+        if xb_cfg.has_option(xb_opt_config_section, 'no_rsync'):
+            xb_opt_no_rsync = bool(int(xb_cfg.get(xb_opt_config_section, 'no_rsync')))
+
+        if xb_cfg.has_option(xb_opt_config_section, 'no_stream'):
+            xb_opt_no_stream = bool(int(xb_cfg.get(xb_opt_config_section, 'no_stream')))
+
+        if xb_cfg.has_option(xb_opt_config_section, 'history'):
+            xb_opt_history = bool(int(xb_cfg.get(xb_opt_config_section, 'history')))
+
         if xb_cfg.has_option(xb_opt_config_section, 'retention_sets'):
             if int(xb_cfg.get(xb_opt_config_section, 'retention_sets')) > 0:
                 xb_opt_retention_sets = int(xb_cfg.get(xb_opt_config_section, 'retention_sets'))
@@ -3069,6 +3109,10 @@ Valid commands are:
 
     if options.apply_log: xb_opt_apply_log = options.apply_log
     if options.prepare_memory: xb_opt_prepare_memory = options.prepare_memory
+    if options.parallel: xb_opt_parallel = options.parallel
+    if options.no_rsync: xb_opt_no_rsync = options.no_rsync
+    if options.no_stream: xb_opt_no_stream = options.no_stream
+    if options.history: xb_opt_history = options.history
     if options.status_format: xb_opt_status_format = options.status_format
     if options.restore_backup is not None:
         xb_opt_restore_backup = options.restore_backup
@@ -3591,6 +3635,8 @@ class PyxOptions(object):
             help='Verify backups with --apply-log, requires enough disk space on --workdir')
         parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
             help='How much memory to use with innobackupex --use-memory in MB, default 128M')
+        parser.add_option('', '--parallel', dest='parallel', type="int",
+            help='How much parallel to use with innobackupex --parallel, default 4')
         parser.add_option('-o', '--status-format', dest='status_format', type="string",
             help=('For status command, what output format, default=none, '
                 'possible values: none, nagios, zabbix (cli)'))
