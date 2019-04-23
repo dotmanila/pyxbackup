@@ -110,6 +110,8 @@ xb_is_last_day_of_week = False
 xb_is_last_day_of_month = False
 xb_mysqldb = None
 xb_backup_summary = None
+xb_server_version = None
+xb_server_type = 'mysql'
 
 XB_CMD_INCR = 'incr'
 XB_CMD_FULL = 'full'
@@ -184,12 +186,17 @@ def _xb_version(verstr = None, tof = False):
             if tof: return float("%d.%d" % (XB_VERSION_MAJOR, XB_VERSION_MINOR))
             else: return True
 
-        p = Popen(["xtrabackup", "--version"], stdout=PIPE, stderr=PIPE)
+        if xb_server_type == 'mariadb':
+            xb_ibx_bin = 'mariabackup'
+        else:
+            xb_ibx_bin = 'xtrabackup'
+
+        p = Popen([xb_ibx_bin, "--version"], stdout=PIPE, stderr=PIPE)
         
         # weird, xtrabackup outputs version 
         # string on STDERR instead of STDOUT
         out, err = p.communicate()
-        ver = re.search('version ([\d\.]+)', err)
+        ver = re.search('[version|server] ([\d\.]+)', err)
         major, minor, rev = ver.group(1).split('.')
     
         XB_VERSION_MAJOR = int(major) if major else 0
@@ -205,7 +212,8 @@ def _xb_version(verstr = None, tof = False):
             _error("Version string was \"%s\"" % err)
             _die("Exiting")
 
-        if XB_VERSION_MINOR >= 3: xb_ibx_bin = 'xtrabackup'
+        if float('%d.%d' % (XB_VERSION_MAJOR, XB_VERSION_MINOR)) >= 2.3 and xb_server_type != 'mariadb': 
+            xb_ibx_bin = 'xtrabackup'
 
         _debug("Found xtrabackup version %d.%d.%d" % (
             XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
@@ -312,6 +320,58 @@ def _check_binary(name):
 
     return bin
 
+def _check_mariadb_binaries():
+    global xb_xbs_bin
+
+    if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
+        _check_binary('mariabackup')
+
+    if xb_opt_remote_nc_port_min:
+        _check_binary('nc')
+        _check_binary('netstat')
+
+    if xb_opt_encrypt or xb_opt_encrypt_key_file:
+        _exit_code(XB_EXIT_BY_DEATH)
+        raise Exception("This script does not support MariaDB backup encryption yet")
+
+    if xb_opt_compress:
+        _check_binary('mbstream')
+
+        if xb_opt_compress_with == 'qpress':
+            _exit_code(XB_EXIT_BY_DEATH)
+            raise Exception("MariaDB deprecated builtin compression, this is upcoming feature")
+        elif xb_opt_compress_with == 'gzip':
+            _check_binary('gzip')
+
+    xb_xbs_bin = 'mbstream'
+
+    # store xtrabackup version numbers
+    if xb_opt_command not in [XB_CMD_WIPE, XB_CMD_LIST]:
+        _xb_version()
+
+def _check_mysql_binaries():
+    if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
+        _check_binary('innobackupex')
+        _check_binary('xtrabackup')
+
+    if xb_opt_remote_nc_port_min:
+        _check_binary('nc')
+        _check_binary('netstat')
+
+    if xb_opt_encrypt or xb_opt_encrypt_key_file:
+        _check_binary('xbcrypt')
+
+    if xb_opt_compress:
+        _check_binary('xbstream')
+
+    if xb_opt_compress_with == 'qpress':
+        _check_binary('qpress')
+
+    # store xtrabackup version numbers
+    if xb_opt_command not in [XB_CMD_WIPE, XB_CMD_LIST]:
+        _xb_version()
+
+
 def _exit_code(code):
     global xb_exit_code
 
@@ -338,21 +398,36 @@ def _create_lock_file():
         lck.close()
 
 def _xb_logfile_copy(bkp):
+    log_file = None
     # When backup is not compressed we need to preserve the 
     # xtrabackup_logfile since preparing directly from the
     # stor_dir will touch the logfile and we cannot use it
     # again
     # We do this to make the process faster instead of copying
     # the whole incremental backup
-    _say("Preserving %s from %s" % (XB_LOG_FILE, bkp))
-    xb_from = "%s/%s" % (bkp, XB_LOG_FILE)
-    xb_to = "%s/%s.101" % (bkp, XB_LOG_FILE)
+    if xb_ibx_bin == 'mariabackup':
+        log_file = 'ib_logfile0'
+    else:
+        log_file = XB_LOG_FILE
+
+    _say("Preserving %s from %s" % (log_file, bkp))
+
+    xb_from = "%s/%s" % (bkp, log_file)
+    xb_to = "%s/%s.101" % (bkp, log_file)
     shutil.copy(xb_from, xb_to)
 
 def _xb_logfile_restore(bkp):
-    _say("Restoring %s from %s" % (XB_LOG_FILE, bkp))
-    xb_from = "%s/%s.101" % (bkp, XB_LOG_FILE)
-    xb_to = "%s/%s" % (bkp, XB_LOG_FILE)
+    log_file = None
+
+    if xb_ibx_bin == 'mariabackup':
+        log_file = 'ib_logfile0'
+    else:
+        log_file = XB_LOG_FILE
+
+    _say("Restoring %s from %s" % (log_file, bkp))
+
+    xb_from = "%s/%s.101" % (bkp, log_file)
+    xb_to = "%s/%s" % (bkp, log_file)
     if os.path.isfile(xb_to): os.remove(xb_to)
     shutil.move(xb_from, xb_to)
 
@@ -416,6 +491,8 @@ def _write_backup_info():
         inf.write("last_lsn = %s\n" % xb_this_last_lsn)
         inf.write("source_version = %d.%d.%d\n" % (
             XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV))
+        inf.write("source_server_type = %s\n" % xb_server_type)
+        inf.write("source_server_version = %s\n" % xb_server_version)
 
         inf.close()
 
@@ -435,6 +512,10 @@ def _write_backup_info():
         xb_backup_summary += "Compressed with: %s\n" % xb_opt_compress_with
         xb_backup_summary += "Binary log name: %s\n" % xb_this_binlog
         xb_backup_summary += "Master binary log name: %s\n" % xb_this_master_binlog
+        xb_backup_summary += "Source xtrabackup version %d.%d.%d\n" % (
+            XB_VERSION_MAJOR, XB_VERSION_MINOR, XB_VERSION_REV)
+        xb_backup_summary += "Source server version: %s\n" % xb_server_version
+        xb_backup_summary += "Source server type: %s\n" % xb_server_type
 
 def _parse_raw_config(ckpnt_f):
     if not os.path.isfile(ckpnt_f):
@@ -464,6 +545,25 @@ def _read_backup_metadata(bkp):
 
     return meta
 
+def _rotate_xtrabackup_info(dirname):
+    # We do this when using mbstream because of the bug
+    # https://jira.mariadb.org/browse/MDEV-18438
+
+    if xb_xbs_bin != 'mbstream':
+        return True
+
+    xb_info_file = os.path.join(dirname, 'xtrabackup_info')
+    xb_info_file0 = os.path.join(dirname, 'xtrabackup_info0')
+
+    if os.path.isfile(xb_info_file):
+        if os.path.isfile(xb_info_file0):
+            os.remove(xb_info_file0)
+
+        shutil.move(xb_info_file, xb_info_file0)
+
+    return True
+
+
 def _apply_log(bkp, incrdir=None, final=False):
     if not os.path.isdir(bkp):
         _warn("Directory not found, ", bkp, " will not prepare")
@@ -478,7 +578,7 @@ def _apply_log(bkp, incrdir=None, final=False):
     tee_cmd = "tee %s" % ibx_log
 
     ibx_opts = ""
-    if XB_VERSION_MINOR >= 3:
+    if xb_ibx_bin != 'innobackupex':
         ibx_opts = '--prepare '
     else: ibx_opts = '--apply-log '
 
@@ -487,17 +587,17 @@ def _apply_log(bkp, incrdir=None, final=False):
     p_tee = None
 
     if not final:
-        if XB_VERSION_MINOR >= 3: ibx_opts += " --apply-log-only"
+        if xb_ibx_bin != 'innobackupex': ibx_opts += " --apply-log-only"
         else: ibx_opts += " --redo-only"
 
     if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
         _say('Preparing incremental backup: ', bkp)
-        if XB_VERSION_MINOR >= 3: 
+        if xb_ibx_bin != 'innobackupex': 
             ibx_opts += " --incremental-dir %s --target-dir %s" % (bkp, incrdir)
         else: ibx_opts += " --incremental-dir %s %s" % (bkp, incrdir)
     else:
         _say('Preparing full backup: ', bkp)
-        if XB_VERSION_MINOR >= 3: ibx_opts += " --target-dir %s" % bkp
+        if xb_ibx_bin != 'innobackupex': ibx_opts += " --target-dir %s" % bkp
         else: ibx_opts += " %s" % bkp
 
     ibx_cmd = "%s %s" % (xb_ibx_bin, ibx_opts)
@@ -533,7 +633,7 @@ def _apply_log(bkp, incrdir=None, final=False):
         return True
 
     except Exception, e:
-        _error("Command was: ", ibx_cmd)
+        _error("Command was: ", ibx_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
         _exit_code(XB_EXIT_APPLY_FAIL)
@@ -768,7 +868,9 @@ def _extract_xgz(xgz, dest):
     gz_cmd += " %s" % xgz
     FNULL = None
 
-    xbs_cmd = "xbstream -x -C %s" % dest
+    xbs_cmd = "%s -x -C %s" % (xb_xbs_bin, dest)
+
+    _rotate_xtrabackup_info(os.path.dirname(xgz))
 
     _debug("Running gzip command: %s" % gz_cmd)
     _debug("Running xbstream command: %s" % xbs_cmd)
@@ -805,8 +907,10 @@ def _extract_xgz(xgz, dest):
     return True
 
 def _extract_xbs(xbs, dest, meta = None):
-    xbs_cmd = "xbstream -x -C %s" % dest
+    xbs_cmd = "%s -x -C %s" % (xb_xbs_bin, dest)
     xbc_cmd = 'cat %s' % xbs
+
+    _rotate_xtrabackup_info(os.path.dirname(xbs))
 
     if not os.path.isdir(dest): os.mkdir(dest, 0755)
 
@@ -943,7 +1047,9 @@ def _extract_stream_qpress(xbs, dest, meta = None):
     xbc_cmd = None
     is_encrypted = False
 
-    xbs_cmd = "xbstream -x -C %s" % dest
+    xbs_cmd = "%s -x -C %s" % (xb_xbs_bin, dest)
+
+    _rotate_xtrabackup_info(os.path.dirname(xbs))
 
     if xbs[-14:] == 'xbs.qp.xbcrypt':
         if not xb_opt_encrypt:
@@ -1371,7 +1477,7 @@ def _ssh_execute(cmd, out=False, nowait=False):
         return True
 
     except Exception, e:
-        _error("Command was: ", ssh_cmd)
+        _error("Command was: ", ssh_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
         raise
@@ -1795,6 +1901,57 @@ def _push_to_remote_netcat(src, dst):
 
     return True
 
+def _server_version():
+
+    if not db_connect():
+        _error("Failed to connect to server, unable to check version.")
+        _exit_code(XB_EXIT_BY_DEATH)
+        return False
+
+    try:
+        cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
+        cur.execute("SELECT @@global.version AS version")
+        ver = cur.fetchone()['version'].split('-')
+        db_close()
+
+        _say("Detected source server as %s %s" % (ver[1], ver[0]))
+
+        return (ver[0], ver[1].lower())
+    except MySQLdb.OperationalError, e:
+        _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
+        _exit_code(XB_EXIT_BY_DEATH)
+        raise Exception("Failed to check server version!")
+        
+        return False
+
+    return True
+
+def _versions_binaries_precheck(backup_metafile = None):
+    global xb_server_version
+    global xb_server_type
+
+    bkp_info = None
+
+    if backup_metafile is None:
+        (xb_server_version, xb_server_type) = _server_version()
+    else:
+        bkp_info = _read_backup_metadata(os.path.dirname(backup_metafile))
+
+        # We assume some defaults for backwards compatibility
+        if bkp_info.has_option(XB_BIN_NAME, 'source_server_version'):
+            xb_server_version = bkp_info.get(XB_BIN_NAME, 'source_server_version')
+            xb_server_type = bkp_info.get(XB_BIN_NAME, 'source_server_type')
+        else:
+            xb_server_version = None
+            xb_server_type = 'mysql'
+
+
+    if xb_server_type == 'mariadb':
+        _check_mariadb_binaries()
+    else:
+        _check_mysql_binaries()
+
+
 def run_wipeout():
     if not xb_opt_wipeout:
         _warn("*************************************************")
@@ -1851,7 +2008,7 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
-    if XB_VERSION_MINOR >= 3:
+    if xb_ibx_bin != 'innobackupex':
         xb_ibx_opts = ' --backup' + xb_ibx_opts        
 
     xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
@@ -1899,7 +2056,7 @@ def run_xb():
     if xb_opt_extra_ibx_options is not None:
         xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
 
-    if XB_VERSION_MINOR >= 3:
+    if xb_ibx_bin != 'innobackupex':
         # --binlog-info on lp152764811
         xb_ibx_opts += ' --binlog-info=on --target-dir ' + xb_this_backup
     else:
@@ -1961,7 +2118,7 @@ def run_xb():
 
             p_cmp = Popen(pipe_cmd, stdin=p_ibx.stdout, shell=True)
         elif xb_opt_remote_push_only:
-            pipe_cmd = "xbstream -x -C %s" % xb_this_backup_remote
+            pipe_cmd = "%s -x -C %s" % (xb_xbs_bin, xb_this_backup_remote)
 
             # We open the netcat port before opening the innobackupex process
             if xb_opt_remote_nc_port_min:
@@ -2010,7 +2167,11 @@ def run_xb():
         xb_info_bkp_end = date(time.time(), '%Y_%m_%d-%H_%M_%S')
 
     except Exception, e:
-        _error("Command was: ", run_cmd)
+        if xb_opt_mysql_pass is not None:
+            _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
+        else:
+            _error("Command was: ", run_cmd)
+
         _error("Error: process exited with status %s" % str(e))
         _error("Please check innobackupex log file at %s" % ibx_log)
         _exit_code(XB_EXIT_INNOBACKUP_FAIL)
@@ -2130,6 +2291,8 @@ def run_xb_full():
     global xb_this_backup
     global xb_this_backup_remote
 
+    _versions_binaries_precheck()
+
     _say("Running FULL backup, started at ",
         date(time.time(), '%Y-%m-%d %H:%M:%S'))
 
@@ -2178,11 +2341,6 @@ def run_xb_incr():
     else:
         xb_this_backup = os.path.join(xb_opt_work_dir, xb_curdate)
 
-    if XB_VERSION_MINOR >= 3:
-        xb_ibx_opts = ' --incremental-basedir='    
-    else:
-        xb_ibx_opts = ' --incremental --incremental-basedir='
-
     if xb_opt_remote_push_only:
 
         ib = os.path.join(xb_opt_work_dir, xb_last_backup)
@@ -2194,6 +2352,7 @@ def run_xb_incr():
 
         if not os.path.isdir(ib): os.mkdir(ib)
         pull_from_remote(os.path.join(rb, XB_CKP_FILE), os.path.join(ib, XB_CKP_FILE))
+        pull_from_remote(os.path.join(rb, XB_META_FILE), os.path.join(ib, XB_META_FILE))
 
         xb_this_backup = os.path.join(xb_opt_work_dir, xb_curdate)
     else:
@@ -2201,6 +2360,16 @@ def run_xb_incr():
             ib = os.path.join(xb_stor_full, xb_last_backup)
         else:
             ib = os.path.join(xb_stor_incr, xb_last_full, xb_last_backup)
+
+    _versions_binaries_precheck(os.path.join(ib, XB_META_FILE))
+    
+    xb_ibx_opts = ''
+
+    if float('%d.%d' % (XB_VERSION_MAJOR, XB_VERSION_MINOR)) <= 2.3 \
+            or xb_ibx_bin == 'innobackupex':
+        xb_ibx_opts += ' --incremental'
+
+    xb_ibx_opts += ' --incremental-basedir='
 
     if xb_opt_remote_host:
         xb_this_backup_remote = os.path.join(
@@ -2363,6 +2532,8 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
 
     if backup_is == XB_CMD_FULL:
         the_backup_path = os.path.join(xb_stor_full, the_backup)
+
+        _versions_binaries_precheck(os.path.join(the_backup_path, XB_META_FILE))
         
         if finalize: 
             prepare_success = _prepare_backup(the_backup_path, prepare_path, finalize)
@@ -2375,6 +2546,9 @@ def run_xb_restore_set(prepare_path=None, finalize=True):
     elif backup_is == XB_CMD_INCR:
         # First let's work on the full backup for this incremental
         the_backup_path = os.path.join(xb_stor_incr, full_backup, the_backup)
+
+        _versions_binaries_precheck(os.path.join(the_backup_path, XB_META_FILE))
+
         bkp_info = _read_backup_metadata(the_backup_path)
 
         bkp_full = bkp_info.get(XB_BIN_NAME, 'full')
@@ -2421,6 +2595,8 @@ def run_xb_apply_last():
         xb_opt_restore_dir = xb_opt_work_dir
         run_xb_restore_set(prepare_path, False)
         return True
+
+    _versions_binaries_precheck(os.path.join(prepare_path, XB_META_FILE))
 
     full_ckp = _parse_raw_config(os.path.join(prepare_path, XB_CKP_FILE))
     to_lsn = full_ckp.get(XB_BIN_NAME, 'to_lsn')
@@ -2545,7 +2721,7 @@ def run_binlog_stream():
 
         os.chdir(xb_cwd)
     except Exception, e:
-        _error("Command was: ", run_cmd)
+        _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_BINLOG_STREAM_FAIL)
         raise
@@ -2743,6 +2919,9 @@ def init():
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
     global xb_opt_purge_bitmaps
+
+    global xb_server_version
+    global xb_server_type
 
     xb_opt_config = "/etc/%s.cnf" % XB_BIN_NAME
 
@@ -3115,27 +3294,6 @@ Valid commands are:
         _die("Encryption requires compression for now, support for ",
             "uncompressed encrypted backup will be added in the future")
 
-    if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
-        _check_binary('innobackupex')
-        _check_binary('xtrabackup')
-
-    if xb_opt_remote_nc_port_min:
-        _check_binary('nc')
-        _check_binary('netstat')
-
-    if xb_opt_encrypt or xb_opt_encrypt_key_file:
-        _check_binary('xbcrypt')
-
-    if xb_opt_compress:
-        _check_binary('xbstream')
-
-    if xb_opt_compress_with == 'qpress':
-        _check_binary('qpress')
-
-    # store xtrabackup version numbers
-    if xb_opt_command not in [XB_CMD_WIPE, XB_CMD_LIST]:
-        _xb_version()
-
     # we test email delivery beforehand to make sure it works
     # this will happen only once as long as the sentinel file exists
     # i.e. STOR_DIR/pyxbackup_mail_ok
@@ -3255,7 +3413,6 @@ def list_backups():
                     unrecognized_backups = True
                     i.remove(r)
                 elif d == xb_last_full and xb_last_incr is None:
-                    _debug('I never hit this one!')
                     xb_last_incr = r
                     xb_last_backup = xb_last_incr
                     xb_last_backup_is = XB_CMD_INCR
