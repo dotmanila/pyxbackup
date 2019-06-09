@@ -1,0 +1,114 @@
+[pyxbackup]
+# MySQL credentials that can be used to the instance
+# being backed up, only user and pass are used at the 
+# time of this writing
+mysql_host = 127.0.0.1
+mysql_user = msandbox
+mysql_pass = msandbox
+mysql_port = 56190
+mysql_sock = /tmp/mysql.sock
+
+# Instructs the script to run prepare on a copy of the backup
+# with redo-only. The script will maintain a copy of every
+# backup inside work_dir and keep applying with redo-only
+# until the next full backup is executed
+apply_log = 1
+
+# Whether to compress backups
+compress = 1
+# What compression tool, supports gzip and qpress
+compress_with = gzip
+
+# SMTP Server
+smtp_server = 127.0.0.1
+
+# Alert Mail From
+mail_from = Database Backup <no-reply@example.com>
+
+# Send abckup failure notifications to these addresses, separated by comma
+notify_by_email = myemail@example.com
+# Send backup completion notifications to these adresses,
+# separated by comma
+notify_on_success = myemail@example.com
+
+# Where to stor raw (compressed) backups on the local directory
+# If --remote-push-only is specified, this is still needed but
+# they will not contain the actual backups, only meta information
+# and logs will remain to keep the backup workflow going
+stor_dir = /sbx/msb/msb_5_6_190/bkp/stor
+# When apply-log is enabled, this is where the "prepared-full"
+# backup will be kept and also stage as temp work dir if backups
+# compression is enabled
+work_dir = /sbx/msb/msb_5_6_190/bkp/work
+
+# When specified, this value will be passed as --defaults-file to
+# innobackupex
+mysql_cnf = /sbx/msb/msb_5_6_190/my.sandbox.cnf
+
+# When streaming/copying backups to remote site
+# this is the destination. It should have the same structure as
+# stor_dir with full, incr, weekly, monthly folders within
+remote_stor_dir = /sbx/msb/msb_5_6_190/bkp/stor_remote
+# Remote host to stream to
+remote_host = 127.0.0.1
+# Optional SSH options when streaming with rsync
+# "-o PasswordAuthentication=no -q" is already specified by default
+ssh_opts = "-i /home/revin/.ssh/id_rsa"
+# The SSH user to use when streaming to remote
+ssh_user = root
+
+# When apply_log is enabled, this is how much memory in MB
+# will be used for --use-memory option with innobackupex
+prepare_memory = 128
+
+# How many sets of full + incrementals to keep in stor
+retention_sets = 2
+# How many archived weekly backups are kept, unused for now
+retention_weeks = 0
+# How many archived monthly backups are kept, unused for now
+retention_months = 0
+# When using binary log streaming, by default, the script will maintain
+# the oldest binary log based on the oldest backup. This can be overridden 
+# by setting a customer retention period for binary logs for special
+# cases
+retention_binlogs = 365
+
+# Same functions as innobackupex --encrypt --encrypt-key-file options
+# to support for encrypted backups at rest
+encrypt = AES256
+encrypt_key_file = /path/to/backups/key
+
+# innobackupex has a lot of options not covered by this wrapper
+# therefore to support additional options, you can pass additional
+# parameters to innobackupex using this option. Enclose them in single or 
+# double quotes and specify them as you would when running innobackupex
+# manually. Take into account to not conflict with options like
+# --compress, --encrypt*, --remote* as these are used in extended 
+# fashion by pyxbackup. 
+#
+# Note that anything after the equal sign is included, quotes are not 
+# stripped since innobackupex can have options that will require quotes 
+# i.e. --include=REGEXP
+extra_ibx_options = --slave-info --galera-info
+
+# When using Percona Server with Changed Page Tracking enabled, the
+# script can also purge the bitmaps automatically provided that it is
+# configured with valid credentials with SUPER privileges
+purge_bitmaps = 1
+
+# By default, when storing backups to a remote storage, scp/ssh streaming is
+# used. If you want to use netcat, simply specify using this option the 
+# netcat port to open on the remote server. The script will use SSH to connect
+# to the remote server and open the nc port, make sure that the SSH user
+# has the privilege to open the port i.e. try to use unprivileged port 
+# instead.
+#
+# If you have multiple backups running at the same time and storing to the 
+# same server, make sure to assign unique ports to each.
+remote_nc_port=9999
+
+# When pushing backups to remote Linux servers, you can specify
+# the path to the pyxbackup script on the remote server and 
+# other config/options
+# file if they are not in default locations ($PATH and /etc/pyxbackup.cnf)
+remote_script=/usr/local/bin/pyxbackup --config=/path/to/custom/pyxbackup.cnf

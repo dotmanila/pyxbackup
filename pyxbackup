@@ -15,6 +15,8 @@ from struct import unpack
 
 XB_BIN_NAME = 'pyxbackup'
 
+xb_opt_mail_from = 'root <root@localhost.localdomain>'
+xb_opt_smtp_server = '127.0.0.1'
 xb_opt_config = None
 xb_opt_config_section = None
 xb_opt_stor_dir = ''
@@ -1401,17 +1403,19 @@ def _notify_by_email(subject, msg="", to=None):
             fp.close()
             msg = "%s\n\n%s" % (msg, log)
 
-        fr = "%s@%s" % (xb_user, xb_hostname)
+        fr = xb_opt_mail_from
+        smtp = xb_opt_smtp_server
+
         hdr = "From: %s\n" % fr
         hdr += "To: %s\n" % recpt
         hdr += "Subject: %s\n\n" % subject
-        s = smtplib.SMTP('127.0.0.1')
+        s = smtplib.SMTP(smtp)
         s.sendmail(fr, recpt.split(','), hdr + msg)
         s.quit()
 
     except smtplib.SMTPServerDisconnected:
         _warn("Disconnected from SMTP server, reconnecting")
-        s = smtplib.SMTP('127.0.0.1')
+        s = smtplib.SMTP(smtp)
         s.sendmail(fr, recpt.split(','), hdr + msg)
         s.quit()
         
@@ -3171,6 +3175,12 @@ Valid commands are:
 
         if xb_cfg.has_option(xb_opt_config_section, 'compress_with'):
             xb_opt_compress_with = xb_cfg.get(xb_opt_config_section, 'compress_with')
+
+        if xb_cfg.has_option(xb_opt_config_section, 'smtp_server'):
+           xb_opt_smtp_server = xb_cfg.get(xb_opt_config_section, 'smtp_server')
+
+        if xb_cfg.has_option(xb_opt_config_section, 'mail_from'):
+            xb_opt_mail_from = xb_cfg.get(xb_opt_config_section, 'mail_from')
 
         if xb_cfg.has_option(xb_opt_config_section, 'notify_by_email'):
             xb_opt_notify_by_email = xb_cfg.get(xb_opt_config_section, 'notify_by_email')
