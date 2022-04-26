@@ -4,6 +4,12 @@
 #
 # @author Jervin Real <jervin.real@percona.com>
 
+# TODO: Based on Server Version if starts with 8 remove following:
+#  --no-timeout switch
+#  --binlog-info=on switch
+# additionally make --parallel default 4 and configurable
+# add --rebuild-threads for --rebuild-threads
+
 import sys, traceback, os, errno, signal, socket
 import time, calendar, shutil, re, pwd
 import smtplib, MySQLdb, base64
@@ -60,6 +66,8 @@ xb_opt_encrypt = False
 xb_opt_encrypt_key_file = None
 xb_opt_extra_ibx_options = None
 xb_opt_purge_bitmaps = None
+xb_opt_parallel = 4
+xb_opt_rebuild_threads = 4
 
 xb_hostname = None
 xb_user = None
@@ -2009,9 +2017,13 @@ def run_xb():
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
     if xb_ibx_bin != 'innobackupex':
-        xb_ibx_opts = ' --backup' + xb_ibx_opts        
+        xb_ibx_opts = ' --backup' + xb_ibx_opts
+        # --no-timestamp option is not available anymore in V8 of xtrabackup
+        if XB_VERSION_MAJOR != 8:
+            xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
+    else:
+      xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
 
-    xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
     if xb_opt_mysql_user:
         xb_ibx_opts = (' --user=%s ' % xb_opt_mysql_user) + xb_ibx_opts
 
@@ -2035,11 +2047,11 @@ def run_xb():
         if xb_opt_compress_with == 'qpress':
             xb_ibx_opts += ' --compress --compress-threads=4'
 
-        xb_ibx_opts += ' --stream=xbstream --parallel=4'
+        xb_ibx_opts += ' --stream=xbstream'
         xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
         os.mkdir(xb_this_backup)
-    else:
-        xb_ibx_opts += ' --parallel=4'
+
+    xb_ibx_opts += " --parallel=%d" % xb_opt_parallel
 
     if xb_opt_encrypt and not xb_opt_apply_log:
         xb_ibx_opts += ' --encrypt=%s --encrypt-threads=4 --encrypt-key-file=%s' % (
@@ -2057,8 +2069,12 @@ def run_xb():
         xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
 
     if xb_ibx_bin != 'innobackupex':
-        # --binlog-info on lp152764811
-        xb_ibx_opts += ' --binlog-info=on --target-dir ' + xb_this_backup
+        # --binlog-info option is not available anymore in V8 of xtrabackup
+        if XB_VERSION_MAJOR != 8:
+            # --binlog-info on lp152764811
+            xb_ibx_opts += ' --binlog-info=on --target-dir ' + xb_this_backup
+        else:
+            xb_ibx_opts += ' --target-dir ' + xb_this_backup
     else:
         xb_ibx_opts += ' ' + xb_this_backup
 
@@ -2919,6 +2935,8 @@ def init():
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
     global xb_opt_purge_bitmaps
+    global xb_opt_parallel
+    global xb_opt_rebuild_threads
 
     global xb_server_version
     global xb_server_type
@@ -3079,6 +3097,10 @@ Valid commands are:
         help=('If Changed Page Tracking is enabled, should we automatically '
             'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
             'with SUPER privieleges is specified.'))
+    parser.add_option('', '--parallel', dest='parallel', type="int",
+        help='How much parallel to use with innobackupex --parallel, default 4')
+    parser.add_option('', '--rebuild-threads', dest='rebuild_threads', type="int",
+        help='How much rebuild-threads to use with innobackupex --rebuild-threads, default 4')
 
     (options, args) = parser.parse_args()
 
@@ -3208,6 +3230,12 @@ Valid commands are:
         if xb_cfg.has_option(xb_opt_config_section, 'purge_bitmaps'):
             xb_opt_purge_bitmaps = xb_cfg.get(xb_opt_config_section, 'purge_bitmaps')
 
+        if xb_cfg.has_option(xb_opt_config_section, 'parallel'):
+            xb_opt_parallel = int(xb_cfg.get(xb_opt_config_section, 'parallel'))
+
+        if xb_cfg.has_option(xb_opt_config_section, 'rebuild_threads'):
+            xb_opt_rebuild_threads = int(xb_cfg.get(xb_opt_config_section, 'rebuild_threads'))
+
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
     if options.mysql_host: xb_opt_mysql_host = options.mysql_host
@@ -3264,6 +3292,8 @@ Valid commands are:
     if options.encrypt_key_file: xb_opt_encrypt_key_file = options.encrypt_key_file
     if options.extra_ibx_options: xb_opt_extra_ibx_options = options.extra_ibx_options
     if options.purge_bitmaps: xb_opt_purge_bitmaps = options.purge_bitmaps
+    if options.parallel: xb_opt_parallel = options.parallel
+    if options.rebuild_threads: xb_opt_rebuild_threads = options.rebuild_threads
 
     if xb_cfg: _debug('Found config file: ', xb_opt_config)
 
@@ -3801,6 +3831,10 @@ class PyxOptions(object):
             help=('If Changed Page Tracking is enabled, should we automatically '
                 'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
                 'with SUPER privieleges is specified.'))
+        parser.add_option('', '--parallel', dest='parallel', type="int",
+            help='How much parallel to use with innobackupex --parallel, default 4')
+        parser.add_option('', '--rebuild-threads', dest='rebuild_threads', type="int",
+        help='How much rebuild-threads to use with innobackupex --rebuild-threads, default 4')
 
         (options, args) = parser.parse_args()
 
