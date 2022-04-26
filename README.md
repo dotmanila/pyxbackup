@@ -19,9 +19,11 @@ Features
 Dependencies
 ============
 
-The script is initially tested only with Python 2.6 on CentOS 6.5 and Python 2.7 on Ubuntu 14.04 - running it on newer versions i.e. 3.x may lead to incompatibility issues. Will appreciate pointers/pull requests on making it compatible with Python 3.x!
+Python 3.x compatible, needs "configparser" and "pymysql" to be installed. Of course xtrabackup is also needed. Tested with Percona MySQL 8 and xtrabackup 8. No guarantee to be backwards compatible to Python 2.7.
 
 Also it requires that the xtrabackup binaries i.e. innobackupex, xtrabackup*, xbstream are found in your PATH environment.
+
+
 
 Configuration
 =============
@@ -141,7 +143,11 @@ Below are some valid options recognized from the configuration file:
     # file if they are not in default locations ($PATH and /etc/pyxbackup.cnf)
     remote_script=/usr/local/bin/pyxbackup --config=/path/to/custom/pyxbackup.cnf
 
+    # configures --parallel switch of xtrabackup
+    parallel = 4
 
+    # configures --rebuild-threads switch of xtrabackup (only needed if prepare is used)
+    rebuild_threads = 4
 Minimum Configuration
 =====================
 
@@ -156,7 +162,7 @@ First, create your local backup folders and install a single dependency:
 
     mkdir /backups/folder/stor
     mkdir /backups/folder/work
-    yum install MySQL-python # apt-get install python-mysqldb
+    pip3 install ConfigParser pymysql
     wget https://raw.githubusercontent.com/dotmanila/pyxbackup/master/pyxbackup
     chmod 0755 pyxbackup
 
