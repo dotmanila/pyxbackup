@@ -588,9 +588,11 @@ def _apply_log(bkp, incrdir=None, final=False):
     ibx_opts = ""
     if xb_ibx_bin != 'innobackupex':
         ibx_opts = '--prepare '
+        if XB_VERSION_MAJOR == 8:
+            ibx_opts += ' --rebuild-threads=%d' % xb_opt_rebuild_threads
     else: ibx_opts = '--apply-log '
 
-    ibx_opts += "--use-memory=%dM" % xb_opt_prepare_memory
+    ibx_opts += " --use-memory=%dM" % xb_opt_prepare_memory
     log_fd = None
     p_tee = None
 
