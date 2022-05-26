@@ -6,9 +6,9 @@
 
 import sys, traceback, os, errno, signal, socket
 import time, calendar, shutil, re, pwd
-import smtplib, MySQLdb, base64
+import smtplib, pymysql, base64
 from datetime import datetime, timedelta
-from ConfigParser import ConfigParser, NoOptionError
+from configparser import ConfigParser, NoOptionError
 from optparse import OptionParser
 from subprocess import Popen, PIPE, STDOUT, CalledProcessError
 from struct import unpack
@@ -60,6 +60,8 @@ xb_opt_encrypt = False
 xb_opt_encrypt_key_file = None
 xb_opt_extra_ibx_options = None
 xb_opt_purge_bitmaps = None
+xb_opt_parallel = 4
+xb_opt_rebuild_threads = 4
 
 xb_hostname = None
 xb_user = None
@@ -75,7 +77,7 @@ xb_cwd = None
 xb_lang = None
 xb_version = 0.5
 xb_ibx_opts = ''
-xb_ibx_bin = 'innobackupex'
+xb_ibx_bin = 'xtrabackup'
 xb_zip_bin = 'gzip'
 xb_xbs_bin = 'xbstream'
 xb_this_backup = None
@@ -128,8 +130,8 @@ XB_CKP_FILE = 'xtrabackup_checkpoints'
 XB_LOG_FILE = 'xtrabackup_logfile'
 XB_LCK_FILE = ''
 XB_META_FILE = 'backup.meta'
-XB_BKP_LOG = 'innobackupex-backup.log'
-XB_APPLY_LOG = 'innobackupex-prepare.log'
+XB_BKP_LOG = 'xtrabackup-backup.log'
+XB_APPLY_LOG = 'xtrabackup-prepare.log'
 XB_LOG_NAME = XB_BIN_NAME + '.log'
 XB_SSH_TMPFILE = '/tmp/' + XB_BIN_NAME + '-ssh-result'
 XB_SIGTERM_CAUGHT = False
@@ -145,7 +147,7 @@ XB_EXIT_BITMAP_PURGE_FAIL   = 8
 XB_EXIT_NO_FULL             = 16
 XB_EXIT_DECRYPT_FAIL        = 32
 XB_EXIT_APPLY_FAIL          = 64
-XB_EXIT_INNOBACKUP_FAIL     = 65
+XB_EXIT_XTRABACKUP_FAIL     = 65
 XB_EXIT_BINLOG_STREAM_FAIL  = 66
 XB_EXIT_REMOTE_CMD_FAIL     = 96
 XB_EXIT_BY_DEATH            = 128
@@ -196,7 +198,7 @@ def _xb_version(verstr = None, tof = False):
         # weird, xtrabackup outputs version 
         # string on STDERR instead of STDOUT
         out, err = p.communicate()
-        ver = re.search('[version|server] ([\d\.]+)', err)
+        ver = re.search('[version|server] ([\d\.]+)', err.decode('utf-8'))
         major, minor, rev = ver.group(1).split('.')
     
         XB_VERSION_MAJOR = int(major) if major else 0
@@ -241,9 +243,10 @@ def _out(tag, *msgs):
     out = "[%s] %s: %s" % (date(time.time()), tag, s)
 
     if xb_log_fd is not None:
-        os.write(xb_log_fd, "%s\n" % out)
+        b = str.encode("%s\n" % out)
+        os.write(xb_log_fd, b)
 
-    if not xb_opt_quiet: print out
+    if not xb_opt_quiet: print(out)
 
 def _say(*msgs):
     _out('INFO', *msgs)
@@ -315,6 +318,7 @@ def _read_magic_chunk(bfile, size):
 
 def _check_binary(name):
     bin = _which(name)
+    
     if bin is None:
         _die("%s script is not found in $PATH" % name)
 
@@ -351,7 +355,6 @@ def _check_mariadb_binaries():
 
 def _check_mysql_binaries():
     if xb_opt_command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
-        _check_binary('innobackupex')
         _check_binary('xtrabackup')
 
     if xb_opt_remote_nc_port_min:
@@ -399,7 +402,7 @@ def _create_lock_file():
 
 def _xb_logfile_copy(bkp):
     log_file = None
-    # When backup is not compressed we need to preserve the 
+    # When backup is not compressed we need to preserve the
     # xtrabackup_logfile since preparing directly from the
     # stor_dir will touch the logfile and we cannot use it
     # again
@@ -457,7 +460,7 @@ def _check_in_progress():
         if is_backup:
             try:
                 os.kill(pid, 0)
-            except OSError, e:
+            except OSError as e:
                 if e.errno == errno.ESRCH:
                     _die("%s lock file exists but process is not running" % XB_LCK_FILE)
                 elif e.errno == errno.EPERM:
@@ -574,31 +577,27 @@ def _apply_log(bkp, incrdir=None, final=False):
         _die('Could not parse xtrabackup_checkpoints file')
 
     ibx_cmd = ''
-    ibx_log = "%s/%s-innobackupex-prepare.log" % (xb_opt_work_dir, xb_curdate)
+    ibx_log = "%s/%s-xtrabackup-prepare.log" % (xb_opt_work_dir, xb_curdate)
     tee_cmd = "tee %s" % ibx_log
 
     ibx_opts = ""
-    if xb_ibx_bin != 'innobackupex':
-        ibx_opts = '--prepare '
-    else: ibx_opts = '--apply-log '
+    ibx_opts = '--prepare '
+    if XB_VERSION_MAJOR == 8:
+        ibx_opts += ' --rebuild-threads=%d' % xb_opt_rebuild_threads
 
-    ibx_opts += "--use-memory=%dM" % xb_opt_prepare_memory
+    ibx_opts += " --use-memory=%dM" % xb_opt_prepare_memory
     log_fd = None
     p_tee = None
 
     if not final:
-        if xb_ibx_bin != 'innobackupex': ibx_opts += " --apply-log-only"
-        else: ibx_opts += " --redo-only"
+        ibx_opts += " --apply-log-only"
 
     if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
         _say('Preparing incremental backup: ', bkp)
-        if xb_ibx_bin != 'innobackupex': 
-            ibx_opts += " --incremental-dir %s --target-dir %s" % (bkp, incrdir)
-        else: ibx_opts += " --incremental-dir %s %s" % (bkp, incrdir)
+        ibx_opts += " --incremental-dir %s --target-dir %s" % (bkp, incrdir)
     else:
         _say('Preparing full backup: ', bkp)
-        if xb_ibx_bin != 'innobackupex': ibx_opts += " --target-dir %s" % bkp
-        else: ibx_opts += " %s" % bkp
+        ibx_opts += " --target-dir %s" % bkp
 
     ibx_cmd = "%s %s" % (xb_ibx_bin, ibx_opts)
     _say("Running prepare command: ", ibx_cmd)
@@ -621,21 +620,21 @@ def _apply_log(bkp, incrdir=None, final=False):
         if log_fd is not None:
             os.close(log_fd)
 
-        if r != 0: raise Exception("Non-zero exit of innobackupex command!")
+        if r != 0: raise Exception("Non-zero exit of xtrabackup command!")
 
         if cfp.get(XB_BIN_NAME,'backup_type') == 'incremental':
             shutil.move(ibx_log,
-                "%s/%s-innobackupex-prepare.log" % (incrdir, xb_curdate))
+                "%s/%s-xtrabackup-prepare.log" % (incrdir, xb_curdate))
         else:
             shutil.move(ibx_log,
-                "%s/%s-innobackupex-prepare.log" % (bkp, xb_curdate))
+                "%s/%s-xtrabackup-prepare.log" % (bkp, xb_curdate))
 
         return True
 
-    except Exception, e:
+    except Exception as e:
         _error("Command was: ", ibx_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
-        _error("Please check innobackupex log file at %s" % ibx_log)
+        _error("Please check xtrabackup log file at %s" % ibx_log)
         _exit_code(XB_EXIT_APPLY_FAIL)
 
     return False
@@ -656,10 +655,10 @@ def _prepare_backup(bkp, prep, final=False):
     if is_cmp:
         prep_tmp = os.path.join(os.path.dirname(prep), this_bkp)
         if is_of_type == XB_CMD_FULL:
-            if not os.path.isdir(prep): os.mkdir(prep, 0755)
+            if not os.path.isdir(prep): os.mkdir(prep, 0o755)
             cmp_to = prep
         else:
-            if not os.path.isdir(prep_tmp): os.mkdir(prep_tmp, 0755)
+            if not os.path.isdir(prep_tmp): os.mkdir(prep_tmp, 0o755)
             cmp_to = prep_tmp
 
         for fmt in ['xbs.gz', 'tar.gz', 'xbs.qp', 'xbs.qp.xbcrypt', 'qp', 'qp.xbcrypt']:
@@ -710,12 +709,12 @@ def _compress_qp(bkp, xbs):
     cwd = os.getcwd()
     os.chdir(bkp)
 
-    # *.tar.gz tar+gzip compress either via innobackupex --stream=tar or
+    # *.tar.gz tar+gzip compress either via xtrabackup --stream=tar or
     #       tar czvf . -
     # *.qp cmopressed with qpress i.e. qpress -rvT4 .
-    # *.xbs.qp for streamed qpress i.e. innobackupex --stream --compress
+    # *.xbs.qp for streamed qpress i.e. xtrabackup --stream --compress
     # *.xbs.qp.xbcrypt for streamed qpress, encrypted 
-    #   i.e. innobackupex --stream --compress --encrypt
+    #   i.e. xtrabackup --stream --compress --encrypt
 
     xbc_cmd = None
     qp = None
@@ -875,7 +874,7 @@ def _extract_xgz(xgz, dest):
     _debug("Running gzip command: %s" % gz_cmd)
     _debug("Running xbstream command: %s" % xbs_cmd)
 
-    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+    if not os.path.isdir(dest): os.mkdir(dest, 0o755)
 
     if not xb_opt_debug:
         FNULL = open(os.devnull, 'w')
@@ -912,7 +911,7 @@ def _extract_xbs(xbs, dest, meta = None):
 
     _rotate_xtrabackup_info(os.path.dirname(xbs))
 
-    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+    if not os.path.isdir(dest): os.mkdir(dest, 0o755)
 
     _say("Extracting from xbstream format: %s" % xbs)
     FNULL = None
@@ -961,8 +960,8 @@ def _extract_xbcrypt(dest, meta = None):
         return _extract_xbcrypt_file(dest)
 
     # Now we decompress *.xbcrypt files
-    ibx_cmd = '%s --decrypt=%s --encrypt-key-file=%s --target-dir=%s' % (
-        xb_ibx_bin, xb_opt_encrypt, xb_opt_encrypt_key_file, dest)
+    ibx_cmd = '%s --decrypt=%s --parallel=%d --encrypt-key-file=%s --target-dir=%s' % (
+        xb_ibx_bin, xb_opt_encrypt, xb_opt_parallel, xb_opt_encrypt_key_file, dest)
 
     FNULL = None
 
@@ -1061,9 +1060,19 @@ def _extract_stream_qpress(xbs, dest, meta = None):
         is_encrypted = True
 
         """ xtrabackup 2.3+ made a change with streamed encrypted
-        backups
+        backups. Charles edit: It seems Xtrabackup 8 returns a byte
+        instead of string for reading magic chunk. We check for that.
+        Fall back to non-decode method if it failss
         """
-        if _read_magic_chunk(xbs, 6) == 'XBSTCK':
+
+        try:
+            magic_chunk = _read_magic_chunk(xbs, 6).decode('utf-8')
+        except (UnicodeDecodeError, AttributeError):
+            magic_chunk = _read_magic_chunk(xbs, 6)
+
+        _debug("Magic chunk: " + magic_chunk)
+
+        if magic_chunk == 'XBSTCK':
             _extract_xbs(xbs, dest, meta)
             _extract_xbcrypt(dest, meta)
             return _extract_ibx_decompress(dest, meta)
@@ -1075,7 +1084,7 @@ def _extract_stream_qpress(xbs, dest, meta = None):
     _debug("Running xbcrypt command: %s" % xbc_cmd)
     _debug("Running xbstream command: %s" % xbs_cmd)
 
-    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+    if not os.path.isdir(dest): os.mkdir(dest, 0o755)
 
     if not xb_opt_debug:
         FNULL = open(os.devnull, 'w')
@@ -1128,7 +1137,7 @@ def _extract_nostream_qpress(qp, dest, meta = None):
     if xbc_cmd is not None:
         _debug("Running xbcrypt command: %s" % xbc_cmd)
 
-    if not os.path.isdir(dest): os.mkdir(dest, 0755)
+    if not os.path.isdir(dest): os.mkdir(dest, 0o755)
 
     if is_encrypted:
         if not xb_opt_debug:
@@ -1226,10 +1235,8 @@ def _extract_ibx_decompress(dest, meta = None):
         return _extract_qp_decompress(dest)
 
     # Now we decompress *.qp files
-    if xb_ibx_bin == 'xtrabackup':
-        ibx_cmd = xb_ibx_bin + ' --decompress --target-dir=%s' % dest
-    else:
-        ibx_cmd = xb_ibx_bin + ' --decompress %s' % dest
+    ibx_cmd = xb_ibx_bin + ' --decompress --parallel=%s --decompress-threads=4 --target-dir=%s' % (xb_opt_parallel, dest)
+
     FNULL = None
 
     if not xb_opt_debug:
@@ -1415,7 +1422,7 @@ def _notify_by_email(subject, msg="", to=None):
         s.sendmail(fr, recpt.split(','), hdr + msg)
         s.quit()
         
-    except Exception, e:
+    except Exception as e:
         if xb_opt_debug: traceback.print_exc()
         _die("Could not send mail ({0}): {1}".format(e.errno, e.strerror))
 
@@ -1476,7 +1483,7 @@ def _ssh_execute(cmd, out=False, nowait=False):
 
         return True
 
-    except Exception, e:
+    except Exception as e:
         _error("Command was: ", ssh_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_REMOTE_CMD_FAIL)
@@ -1520,7 +1527,7 @@ def _binlog_from_backup(backup, full=None):
         if binlog == 'None':
             _warn("Invalid binlog record from backup, found '%s'" % binlog)
             binlog = False
-    except NoOptionError, e:
+    except NoOptionError as e:
         _warn("No binlog information from specified backup!")
 
     return binlog
@@ -1645,7 +1652,7 @@ def _stream_binlog_from():
         _die("Failed to connect to remote host, ", 
             "unable to check list of binary logs.")
 
-    cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
+    cur = xb_mysqldb.cursor(pymysql.cursors.DictCursor)
     cur.execute('SHOW BINARY LOGS')
     logs = []
     low = None
@@ -1718,9 +1725,9 @@ def _purge_bitmaps_to(lsn):
         return False
 
     try:
-        cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
+        cur = xb_mysqldb.cursor(pymysql.cursors.DictCursor)
         cur.execute("PURGE CHANGED_PAGE_BITMAPS BEFORE %s" % lsn)
-    except MySQLdb.OperationalError, e:
+    except pymysql.OperationalError as e:
         _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
         _error("Failed to purge bitmaps!")
         _exit_code(XB_EXIT_BITMAP_PURGE_FAIL)
@@ -1909,15 +1916,19 @@ def _server_version():
         return False
 
     try:
-        cur = xb_mysqldb.cursor(MySQLdb.cursors.DictCursor)
+        cur = xb_mysqldb.cursor(pymysql.cursors.DictCursor)
         cur.execute("SELECT @@global.version AS version")
         ver = cur.fetchone()['version'].split('-')
         db_close()
 
-        _say("Detected source server as %s %s" % (ver[1], ver[0]))
+        if len(ver) == 2:
+            _say("Detected source server as %s %s" % (ver[1], ver[0]))
+        else:
+            _say("Detected source server as %s" % (ver[0]))
+            ver.append('log')
 
         return (ver[0], ver[1].lower())
-    except MySQLdb.OperationalError, e:
+    except pymysql.OperationalError as e:
         _error("Got MySQL error %d, \"%s\" at execute" % (e.args[0], e.args[1]))
         _exit_code(XB_EXIT_BY_DEATH)
         raise Exception("Failed to check server version!")
@@ -1984,8 +1995,8 @@ def run_meta_query():
             else: v.append('NULL')
 
     if len(v) > 0:
-        print ' '.join([str(i) for i in v])
-    else: print 'NULL'
+        print(' '.join([str(i) for i in v]))
+    else: print('NULL')
 
     return True
 
@@ -2008,15 +2019,19 @@ def run_xb():
     if xb_last_full:
         xb_prepared_backup = "%s/P_%s" % (xb_opt_work_dir, xb_last_full)
 
-    if xb_ibx_bin != 'innobackupex':
-        xb_ibx_opts = ' --backup' + xb_ibx_opts        
+    xb_ibx_opts = ' --backup' + xb_ibx_opts
+    # --no-timestamp option is not available anymore in V8 of xtrabackup
+    if XB_VERSION_MAJOR != 8:
+        xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
 
-    xb_ibx_opts = ' --no-timestamp' + xb_ibx_opts
     if xb_opt_mysql_user:
         xb_ibx_opts = (' --user=%s ' % xb_opt_mysql_user) + xb_ibx_opts
 
     if xb_opt_mysql_pass:
         xb_ibx_opts = (' --password=%s ' % xb_opt_mysql_pass) + xb_ibx_opts
+
+    if xb_opt_mysql_port:
+        xb_ibx_opts = (' --port=%s ' % xb_opt_mysql_port) + xb_ibx_opts
 
     if xb_opt_mysql_host:
         xb_ibx_opts = (' --host=%s ' % xb_opt_mysql_host) + xb_ibx_opts
@@ -2035,11 +2050,9 @@ def run_xb():
         if xb_opt_compress_with == 'qpress':
             xb_ibx_opts += ' --compress --compress-threads=4'
 
-        xb_ibx_opts += ' --stream=xbstream --parallel=4'
+        xb_ibx_opts += ' --stream=xbstream --parallel=%d' % xb_opt_parallel
         xb_ibx_opts += ' --extra-lsndir=' + xb_this_backup
         os.mkdir(xb_this_backup)
-    else:
-        xb_ibx_opts += ' --parallel=4'
 
     if xb_opt_encrypt and not xb_opt_apply_log:
         xb_ibx_opts += ' --encrypt=%s --encrypt-threads=4 --encrypt-key-file=%s' % (
@@ -2056,11 +2069,12 @@ def run_xb():
     if xb_opt_extra_ibx_options is not None:
         xb_ibx_opts += ' ' + xb_opt_extra_ibx_options
 
-    if xb_ibx_bin != 'innobackupex':
+    # --binlog-info option is not available anymore in V8 of xtrabackup
+    if XB_VERSION_MAJOR != 8:
         # --binlog-info on lp152764811
         xb_ibx_opts += ' --binlog-info=on --target-dir ' + xb_this_backup
     else:
-        xb_ibx_opts += ' ' + xb_this_backup
+        xb_ibx_opts += ' --target-dir ' + xb_this_backup
 
     try:
         run_cmd = xb_ibx_bin + xb_ibx_opts
@@ -2072,7 +2086,7 @@ def run_xb():
 
         #if not xb_opt_debug:
         #    run_cmd += " 2> %s-xbackup.log" % xb_this_backup
-        ibx_log = "%s/%s-innobackupex-backup.log" % (xb_opt_work_dir, xb_curdate)
+        ibx_log = "%s/%s-xtrabackup-backup.log" % (xb_opt_work_dir, xb_curdate)
         tee_cmd = "tee %s" % ibx_log
 
         if xb_opt_compress and not xb_opt_apply_log:
@@ -2093,7 +2107,7 @@ def run_xb():
 
             pipe_cmd = "%s %s" % (pipe_cmd, backup_archive)
 
-            # We open the netcat port before opening the innobackupex process
+            # We open the netcat port before opening the xtrabackup process
             if xb_opt_remote_push_only and xb_opt_remote_nc_port_min:
                 _open_remote_nc_port(xb_opt_remote_nc_port_min, pipe_cmd)
 
@@ -2120,7 +2134,7 @@ def run_xb():
         elif xb_opt_remote_push_only:
             pipe_cmd = "%s -x -C %s" % (xb_xbs_bin, xb_this_backup_remote)
 
-            # We open the netcat port before opening the innobackupex process
+            # We open the netcat port before opening the xtrabackup process
             if xb_opt_remote_nc_port_min:
                 _open_remote_nc_port(xb_opt_remote_nc_port_min, pipe_cmd)
 
@@ -2162,19 +2176,19 @@ def run_xb():
         if log_fd is not None:
             os.close(log_fd)
 
-        if r != 0: raise Exception("Non-zero exit of innobackupex command!")
+        if r != 0: raise Exception("Non-zero exit of xtrabackup command!")
         xb_backup_is_success = True
         xb_info_bkp_end = date(time.time(), '%Y_%m_%d-%H_%M_%S')
 
-    except Exception, e:
+    except Exception as e:
         if xb_opt_mysql_pass is not None:
             _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
         else:
             _error("Command was: ", run_cmd)
 
         _error("Error: process exited with status %s" % str(e))
-        _error("Please check innobackupex log file at %s" % ibx_log)
-        _exit_code(XB_EXIT_INNOBACKUP_FAIL)
+        _error("Please check xtrabackup log file at %s" % ibx_log)
+        _exit_code(XB_EXIT_XTRABACKUP_FAIL)
         raise
 
     if xb_opt_command == XB_CMD_FULL and xb_backup_is_success:
@@ -2185,10 +2199,10 @@ def run_xb():
         xb_this_last_lsn = full_ckp.get(XB_BIN_NAME, 'last_lsn')
 
     # Cleanup work directory
-    # First, move the innobackupex logfile to the actual backup directory
+    # First, move the xtrabackup logfile to the actual backup directory
     if xb_backup_is_success and not xb_opt_apply_log:
-        shutil.move(ibx_log, "%s/innobackupex-backup.log" % xb_this_backup)
-        ibx_log = "%s/innobackupex-backup.log" % xb_this_backup
+        shutil.move(ibx_log, "%s/xtrabackup-backup.log" % xb_this_backup)
+        ibx_log = "%s/xtrabackup-backup.log" % xb_this_backup
 
     if xb_opt_apply_log and xb_backup_is_success:
         if xb_opt_command == XB_CMD_FULL and xb_prepared_backup \
@@ -2237,8 +2251,8 @@ def run_xb():
             # Update path to this backup to reflect movement to stor dir
             xb_this_backup = t
 
-            shutil.move(ibx_log, "%s/innobackupex-backup.log" % t)
-            ibx_log = "%s/innobackupex-backup.log" % t
+            shutil.move(ibx_log, "%s/xtrabackup-backup.log" % t)
+            ibx_log = "%s/xtrabackup-backup.log" % t
             _say("Backup log has been moved to ", ibx_log)
         else:
             _die('Apply log failed, aborting!')
@@ -2364,11 +2378,6 @@ def run_xb_incr():
     _versions_binaries_precheck(os.path.join(ib, XB_META_FILE))
     
     xb_ibx_opts = ''
-
-    if float('%d.%d' % (XB_VERSION_MAJOR, XB_VERSION_MINOR)) <= 2.3 \
-            or xb_ibx_bin == 'innobackupex':
-        xb_ibx_opts += ' --incremental'
-
     xb_ibx_opts += ' --incremental-basedir='
 
     if xb_opt_remote_host:
@@ -2396,17 +2405,17 @@ def run_xb_list():
         if f in xb_incr_list and xb_incr_list[f] and len(xb_incr_list[f]) > 0:
             s += ", incrementals: " + str(xb_incr_list[f])
 
-        print s
+        print(s)
 
     if xb_weekly_list is not None and len(xb_weekly_list) > 0:
-        print "# Weekly list: %s" % str(xb_weekly_list)
+        print("# Weekly list: %s" % str(xb_weekly_list))
 
     if xb_monthly_list is not None and len(xb_monthly_list) > 0:
-        print "# Monthly list: %s" % str(xb_monthly_list)
+        print("# Monthly list: %s" % str(xb_monthly_list))
 
     if xb_binlogs_list is not None and len(xb_binlogs_list) > 0:
-        print "# Binary logs from %s to %s, %d total" % (
-            xb_binlogs_list[0], xb_binlogs_list[-1], len(xb_binlogs_list))
+        print("# Binary logs from %s to %s, %d total" % (
+            xb_binlogs_list[0], xb_binlogs_list[-1], len(xb_binlogs_list)))
 
 def run_status():
     """Display status of last backup - excludes any currently running backup"""
@@ -2429,7 +2438,7 @@ def run_status():
 
             try:
                 os.kill(pid, 0)
-            except OSError, e:
+            except OSError as e:
                 if e.errno == errno.ESRCH:
                     ret = 2
                     txt = 'PID/lock file exists but process is not running'
@@ -2466,8 +2475,8 @@ def run_status():
     elif ret == 1: txt = "WARN - %s" % txt
     else: txt = "CRITICAL - %s" % txt
 
-    if xb_opt_status_format == 'nagios': print txt
-    elif xb_opt_status_format == 'zabbix': print ret
+    if xb_opt_status_format == 'nagios': print(txt)
+    elif xb_opt_status_format == 'zabbix': print(ret)
     sys.exit(ret)
 
 def run_xb_restore_set(prepare_path=None, finalize=True):
@@ -2720,7 +2729,7 @@ def run_binlog_stream():
                     list_binlogs()
 
         os.chdir(xb_cwd)
-    except Exception, e:
+    except Exception as e:
         _error("Command was: ", run_cmd.replace(xb_opt_mysql_pass,"*******"))
         _error("Error: process exited with status %s" % str(e))
         _exit_code(XB_EXIT_BINLOG_STREAM_FAIL)
@@ -2747,7 +2756,7 @@ def prune_full_incr():
             else: w = d
 
             w_dir = os.path.join(xb_stor_weekly, w)
-            os.mkdir(w_dir, 0755)
+            os.mkdir(w_dir, 0o755)
             shutil.copytree(
                 os.path.join(xb_stor_full, d), os.path.join(w_dir, 'full'))
 
@@ -2842,6 +2851,8 @@ def db_connect():
 
     params = dict()
 
+    params['host'] = xb_opt_mysql_host
+    params['autocommit'] = True
     if xb_opt_mysql_user is not None:
         params['user'] = xb_opt_mysql_user
 
@@ -2856,11 +2867,9 @@ def db_connect():
         params['read_default_group'] = 'client'
 
     try:
-        xb_mysqldb = MySQLdb.connect(xb_opt_mysql_host, **params)
+        xb_mysqldb = pymysql.connect(**params)
 
-        # MySQLdb for some reason has autoccommit off by default
-        xb_mysqldb.autocommit(True)
-    except MySQLdb.Error, e:
+    except pymysql.Error as e:
         _error("Error ", e.args[0], ": ", e.args[1])
         return False
 
@@ -2919,6 +2928,8 @@ def init():
     global xb_opt_encrypt_key_file
     global xb_opt_extra_ibx_options
     global xb_opt_purge_bitmaps
+    global xb_opt_parallel
+    global xb_opt_rebuild_threads
 
     global xb_server_version
     global xb_server_type
@@ -2983,7 +2994,7 @@ Valid commands are:
         help='MySQL server path to socket file')
     parser.add_option('-c', '--mysql-cnf', dest='mysql_cnf', type='string',
         help=('Path to custom my.cnf, in case you want to pass this value to '
-            'innobackupex --defaults-file'))
+            'xtrabackup --defaults-file'))
     parser.add_option('-s', '--stor-dir', dest='stor_dir', type='string',
         help='Path to directory where backups are stored.')
     parser.add_option('-w', '--work-dir', dest='work_dir', type='string',
@@ -2991,7 +3002,7 @@ Valid commands are:
     parser.add_option('-b', '--retention-binlogs', dest='retention_binlogs', type="int",
         help='Binary log period retention, in days')
     parser.add_option('', '--extra-ibx-options', dest='extra_ibx_options', type='string',
-        help=('Specify additional innobackupex options, make sure to '
+        help=('Specify additional xtrabackup options, make sure to '
             'mind your quotes and avoid conflicts with --encrypt*, '
             '--compress, --remote-host - will think of better way to '
             'handle this in the future!'))
@@ -3025,7 +3036,7 @@ Valid commands are:
     parser.add_option('-x', '--apply-log', dest='apply_log', action="store_true",
         help='Verify backups with --apply-log, requires enough disk space on --workdir')
     parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
-        help='How much memory to use with innobackupex --use-memory in MB, default 128M')
+        help='How much memory to use with xtrabackup --use-memory in MB, default 128M')
     parser.add_option('-o', '--status-format', dest='status_format', type="string",
         help=('For status command, what output format, default=none, '
             'possible values: none, nagios, zabbix (cli)'))
@@ -3079,6 +3090,10 @@ Valid commands are:
         help=('If Changed Page Tracking is enabled, should we automatically '
             'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
             'with SUPER privieleges is specified.'))
+    parser.add_option('', '--parallel', dest='parallel', type="int",
+        help='How much parallel to use with xtrabackup --parallel, default 4')
+    parser.add_option('', '--rebuild-threads', dest='rebuild_threads', type="int",
+        help='How much rebuild-threads to use with xtrabackup --rebuild-threads, default 4')
 
     (options, args) = parser.parse_args()
 
@@ -3208,6 +3223,12 @@ Valid commands are:
         if xb_cfg.has_option(xb_opt_config_section, 'purge_bitmaps'):
             xb_opt_purge_bitmaps = xb_cfg.get(xb_opt_config_section, 'purge_bitmaps')
 
+        if xb_cfg.has_option(xb_opt_config_section, 'parallel'):
+            xb_opt_parallel = int(xb_cfg.get(xb_opt_config_section, 'parallel'))
+
+        if xb_cfg.has_option(xb_opt_config_section, 'rebuild_threads'):
+            xb_opt_rebuild_threads = int(xb_cfg.get(xb_opt_config_section, 'rebuild_threads'))
+
     if options.mysql_user: xb_opt_mysql_user = options.mysql_user
     if options.mysql_pass: xb_opt_mysql_pass = options.mysql_pass
     if options.mysql_host: xb_opt_mysql_host = options.mysql_host
@@ -3264,6 +3285,8 @@ Valid commands are:
     if options.encrypt_key_file: xb_opt_encrypt_key_file = options.encrypt_key_file
     if options.extra_ibx_options: xb_opt_extra_ibx_options = options.extra_ibx_options
     if options.purge_bitmaps: xb_opt_purge_bitmaps = options.purge_bitmaps
+    if options.parallel: xb_opt_parallel = options.parallel
+    if options.rebuild_threads: xb_opt_rebuild_threads = options.rebuild_threads
 
     if xb_cfg: _debug('Found config file: ', xb_opt_config)
 
@@ -3338,11 +3361,11 @@ def check_dirs():
     xb_stor_monthly = xb_opt_stor_dir + '/monthly'
     xb_stor_binlogs = xb_opt_stor_dir + '/binlogs'
 
-    if not os.path.isdir(xb_stor_full): os.mkdir(xb_stor_full, 0755)
-    if not os.path.isdir(xb_stor_incr): os.mkdir(xb_stor_incr, 0755)
-    if not os.path.isdir(xb_stor_weekly): os.mkdir(xb_stor_weekly, 0755)
-    if not os.path.isdir(xb_stor_monthly): os.mkdir(xb_stor_monthly, 0755)
-    if not os.path.isdir(xb_stor_binlogs): os.mkdir(xb_stor_binlogs, 0755)
+    if not os.path.isdir(xb_stor_full): os.mkdir(xb_stor_full, 0o755)
+    if not os.path.isdir(xb_stor_incr): os.mkdir(xb_stor_incr, 0o755)
+    if not os.path.isdir(xb_stor_weekly): os.mkdir(xb_stor_weekly, 0o755)
+    if not os.path.isdir(xb_stor_monthly): os.mkdir(xb_stor_monthly, 0o755)
+    if not os.path.isdir(xb_stor_binlogs): os.mkdir(xb_stor_binlogs, 0o755)
 
 def list_backups():
     """List all valid backups inside the store directory"""
@@ -3594,7 +3617,7 @@ if __name__ == "__main__":
                 xb_backup_summary, xb_opt_notify_on_success)
 
         sys.exit(xb_exit_code)
-    except Exception, e:
+    except Exception as e:
         if xb_opt_notify_by_email:
             _notify_by_email(
                 "MySQL backup script at %s exception!" % xb_hostname,
@@ -3705,7 +3728,7 @@ class PyxOptions(object):
             help='MySQL server path to socket file')
         parser.add_option('-c', '--mysql-cnf', dest='mysql_cnf', type='string',
             help=('Path to custom my.cnf, in case you want to pass this value to '
-                'innobackupex --defaults-file'))
+                'xtrabackup --defaults-file'))
         parser.add_option('-s', '--stor-dir', dest='stor_dir', type='string',
             help='Path to directory where backups are stored.')
         parser.add_option('-w', '--work-dir', dest='work_dir', type='string',
@@ -3713,7 +3736,7 @@ class PyxOptions(object):
         parser.add_option('-b', '--retention-binlogs', dest='retention_binlogs', type="int",
             help='Binary log period retention, in days')
         parser.add_option('', '--extra-ibx-options', dest='extra_ibx_options', type='string',
-            help=('Specify additional innobackupex options, make sure to '
+            help=('Specify additional xtrabackup options, make sure to '
                 'mind your quotes and avoid conflicts with --encrypt*, '
                 '--compress, --remote-host - will think of better way to '
                 'handle this in the future!'))
@@ -3747,7 +3770,7 @@ class PyxOptions(object):
         parser.add_option('-x', '--apply-log', dest='apply_log', action="store_true",
             help='Verify backups with --apply-log, requires enough disk space on --workdir')
         parser.add_option('-m', '--prepare-memory', dest='prepare_memory', type="int",
-            help='How much memory to use with innobackupex --use-memory in MB, default 128M')
+            help='How much memory to use with xtrabackup --use-memory in MB, default 128M')
         parser.add_option('-o', '--status-format', dest='status_format', type="string",
             help=('For status command, what output format, default=none, '
                 'possible values: none, nagios, zabbix (cli)'))
@@ -3801,6 +3824,10 @@ class PyxOptions(object):
             help=('If Changed Page Tracking is enabled, should we automatically '
                 'purge bitmaps? Requires that a valid mysql-user and mysql-pass ' 
                 'with SUPER privieleges is specified.'))
+        parser.add_option('', '--parallel', dest='parallel', type="int",
+            help='How much parallel to use with xtrabackup --parallel, default 4')
+        parser.add_option('', '--rebuild-threads', dest='rebuild_threads', type="int",
+        help='How much rebuild-threads to use with xtrabackup --rebuild-threads, default 4')
 
         (options, args) = parser.parse_args()
 
@@ -3915,7 +3942,6 @@ class PyxOptions(object):
                 "uncompressed encrypted backup will be added in the future")
 
         if command in [XB_CMD_FULL, XB_CMD_INCR, XB_CMD_PREP, XB_CMD_APPL]:
-            _check_binary('innobackupex')
             _check_binary('xtrabackup')
 
         if remote_nc_port_min:
